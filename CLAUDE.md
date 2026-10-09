@@ -22,39 +22,43 @@ Everything lives in one IIFE. Main parts, in file order:
 6. **Physics**: `stepCar` is a kinematic bicycle model with speed-dependent steering limits. `act()` handles signals, mirror and shoulder checks, and hold speed. `mirrorAgo`, `lookLAgo` and `lookRAgo` are the seconds since the last check, and scoring reads them.
 7. **AI**: `mkVeh` creates a vehicle that follows a path at arc length `s` with lateral offset `lat`. `updateAI` does car following, optional `hold` (stop at a point while a condition is true) and an optional per-vehicle `script`.
 8. **Generic checks**: `genericChecks` covers speed limits and harsh braking. `laneChangeCheck` covers signal, mirrors, shoulder check and blind-spot occupancy.
-9. **Levels**: `RB` (roundabout), `HW` (motorway exit), `CR` (country road), registered in `LEVELS`. The level interface:
+9. **Levels**: `RB` (roundabout), `HW` (motorway exit), `CR` (country road), `OSM` (Farsta, real roads, see below), registered in `LEVELS`. The level interface:
    - `init(opts)`: build paths, spawn the player and AI, set `signs`, `hints`, `S.instr`
    - `step(dt)`: scenario-specific scoring, calls `finish()` at the end
    - `draw(g)`: draws the ground (roads, markings) in world metres on a 2D canvas. The 3D view reuses this as the ground texture, so anything drawn here shows up in every view.
    - `checkLimit()`, `hudLimit()`, `zone()`: the speed limit used for scoring, the one shown, and a zone id used to dedupe speeding faults
    - `ground` (colour), `title`, `signs: [{x, y, type, val}]` with types `limit | warn | giveway | mw | town | rb | bus | zebra`
    - `hints: [{when: () => bool, t: 'text'}]` for coach mode
+   - optional: `subtitle()` (shown in the report, e.g. the route name), `trees` (3D trees), `build3D(group)` (extra 3D scenery), `sync3D()` (per-frame 3D updates), `drawDyn(g)` (per-frame 2D overlay that must not go into the cached ground texture)
 10. **2D renderer** (Map view): `render`, `drawVeh`, `drawSign` and `drawSignFace`.
 11. **3D renderer** (Driver and Chase views, three.js): `init3D`, `build3D` (per-level scenery: trees as InstancedMesh, houses, signs as sprites), `vehMesh`, `syncDyn` (keeps meshes in step with `S.ai` and `S.peds`), `updateGroundTex` (redraws `level.draw` into a 2048 px texture covering 280 m around a point ahead of the car), `render3D` (desktop mirrors use scissor viewports and a horizontally flipped projection, which is why scene materials are DoubleSide).
 12. **VR**: `buildCockpit` (dashboard, pillars, steering wheel, mirror planes using render targets, dashboard display panel), `pollXR` (Quest controller mapping), `renderXR` (rig follows the car, mirror render targets every other frame, head-gaze detection for mirror and shoulder checks), `enterVR`, `recenterXR`. The frame loop runs through `renderer.setAnimationLoop(frame)`.
 13. **Report**: `finish()` builds the Trafikverket-style report and saves the drive to progress.
 14. **Quiz** (`QUIZ` array with inline SVG diagrams), **video drills** (`V`), **progress** (`renderProgress`).
+15. **Test hook**: with `?test` in the address, `window.FDL_TEST` exposes `auto(on, timeScale, traffic)` (an autopilot that follows the Farsta route, gives way, stops at red and signals; `traffic` false clears AI traffic), `state()` and `near()` (vehicles around the player, for debugging). The smoke test uses it.
 
-## Next: real Farsta roads from OpenStreetMap
+## Farsta level (OpenStreetMap)
 
-Goal: replace or complement the generic scenarios with drives on the real roads around the Trafikverket test centre in Farsta (look up the current address on trafikverket.se), so the user can rehearse the actual test area. Use OpenStreetMap data (ODbL, credit "© OpenStreetMap contributors" in the UI). Do not use Google Maps geometry: its terms do not allow extracting road data.
+Pipeline: `tools/fetch-osm.mjs` (Overpass query for the bbox in `tools/farsta.config.json`) → `data/farsta.osm.json` → `tools/osm-to-level.mjs` → `data/farsta.level.json` and `data/farsta.level.js` (`window.FDL_FARSTA=...`, loaded by a script tag so `file://` works). If the data file is missing, the Farsta card is disabled.
 
-Suggested plan:
+`src/osm-lib.js` is a plain script (works as a classic script and as an ES module import) that sets `globalThis.FDL_OSM`. It holds everything shared by the app, the preprocessor and the unit tests:
+- `projector(lat0, lon0)`: `x = (lon - lon0) * cos(lat0) * 111320`, `y = -(lat - lat0) * 110540`. The origin is the test centre, found in the OSM data by its address.
+- `simplify` (Douglas-Peucker), `tier(hw)` (road class), `defaultLimit(hw)`, `laneOffset(way)` (rightmost lane centre).
+- `Net(level)`: the junction graph. Directed edge id `de` = `2 * edge` for a→b, `2 * edge + 1` for b→a (one-way ways are stored in their legal direction). Spatial grid for `nearest`, `nearestDe` (respects heading and one-way), `snapNode`. Routing: `route` (edge-based Dijkstra with turn costs, no U-turns except at dead ends), `routeVia`, `routeWaypoints`, `randomWalk` (AI), `generateRoute` / `generateFrom` (scored loops from the test centre). `pathPoints` builds a lane-centre polyline with rounded corners. `events` lists what happens along a route: `node` (turn or roundabout, with `ctrl` = signals | stop | give_way | yield | right | major | unknown), `rbx` (roundabout exits passed), `rbout`, `light`, `zebra`, `bus`. `control` decides priority: tagged signs first, then a smaller road gives way to a bigger one, högerregeln between equal small streets, and `unknown` (not scored) between equal bigger roads. Traffic lights: `buildLights` finds each cluster's approaches, stop lines and two phase groups by direction; `lightState(cluster, group, t)`.
 
-1. **Fetch data** with the Overpass API for a bounding box around Farsta (roughly Farsta centrum, Farsta strand, Larsboda and Nynäsvägen, road 73, as far as typical test routes go; ask the user which routes the examiners use). Query `way[highway]` with the tags `lanes`, `maxspeed`, `oneway`, `junction`, `turn:lanes`, and nodes with `highway=crossing|traffic_signals|give_way|stop|bus_stop`. Save the raw response to `data/farsta.osm.json` so the app does not hit Overpass at runtime.
-2. **Preprocess** with a Node script (`tools/osm-to-level.mjs`) into `data/farsta.level.json`:
-   - Project lat/lon to local metres around an origin: `x = (lon - lon0) * cos(lat0) * 111320`, `y = -(lat - lat0) * 110540` (y points south, to match the app).
-   - For each way: centreline polyline, width from `lanes` (about 3.5 m per lane), speed limit, oneway, roundabout flag.
-   - Junction graph: nodes shared by ways, with give-way and signal info.
-   - Keep it under a few MB. Simplify polylines (Douglas-Peucker, about 0.5 m).
-3. **Add an `OSM` level** that implements the level interface:
-   - `draw(g)`: road surfaces as stroked polylines at road width, lane markings (dashed centre lines, edge lines), zebra crossings at crossing nodes, stop and give-way lines.
-   - Routes: a route is a list of way and node ids, or simply a list of waypoints. Build the player's guidance path by snapping waypoints to the graph, and give spoken-style instructions ("Take the 2nd exit", "Turn left at the lights") at the right distances.
-   - Scoring: reuse `genericChecks` and `laneChangeCheck`. Generalise the roundabout logic from `RB.step` to any `junction=roundabout` (entry yield, lane position for exit, exit signal), the junction logic from `CR.step` (anticipation near side roads), and add traffic-light compliance and priority to the right at unmarked junctions.
-   - Traffic: spawn AI along random graph paths, with a simple junction reservation so cars do not drive through each other.
-4. **Signs** from OSM tags (`maxspeed` changes, `traffic_sign` nodes where they exist).
-5. **UI**: add a "Farsta" scenario card with a route picker, and show the OSM attribution.
-6. **Tests**: extend `tests/smoke.mjs` to drive the OSM level, and add a unit test for the projection and path snapping.
+`OSM` in `src/app.js`: `setRoute` turns a route into `this.path` (with `lim` and zone per point) and `this.ev` (events with path `s`); `checks` scores each event (signal and mirrors before turns, lane position, stop signs, give-way and högerregeln via `conflictAt`, roundabout entry yield via `ringConflict`, early and missing exit signals, red and amber, zebras with spawned pedestrians, the bus pulling out). Leaving the route reroutes to the test centre (`reroute`) without a fault. AI: `spawnAI` and `mkAI` put cars on random walks within 280 m; `aiDrive` handles curves, lights, roundabout entry, junction reservation (`reserve`, one car per unsignalled junction at a time), yielding to the player and pedestrians. Scripted conflicts: `spawnRing` (car already in the roundabout) and `spawnRight` (car from the right at an unmarked junction, `assert: true` so it keeps its priority). 3D: merged building mesh, traffic light heads with shared lamp materials, trees along the route corridor.
+
+## Farsta roads: status and next steps
+
+Done: the pipeline, the `OSM` level, the Farsta card with a route picker, attribution, unit tests and the smoke test (see above). It was built and tested against the synthetic network in `tests/fixtures/mini.osm.json`, because the build environment could not reach Overpass.
+
+Next:
+1. Run `npm run osm` where Overpass is reachable, commit `data/`, and drive the generated routes. Check the warnings it prints (test centre address found, routes generated) and look at the screenshots. Real data will show things the fixture does not: dual carriageways, slip roads, multi-lane roundabouts, signal nodes far from the junction node, missing names.
+2. Ask the user which routes the Farsta examiners use, and add them to `routes` in `tools/farsta.config.json`.
+3. Turn restrictions (`restriction` relations) in routing, and `turn:lanes` for lane choice and lane-position scoring on multi-lane roads (currently not scored there).
+4. Multi-lane roundabouts: lane choice by exit.
+5. Left turns at lights: give way to oncoming traffic.
+6. Keep the size in check: buildings are most of `data/farsta.level.json`. Drop or simplify them further if it grows past a few MB.
 
 Things to get right for Swedish rules:
 - Priority to the right (högerregeln) applies at junctions without signs.

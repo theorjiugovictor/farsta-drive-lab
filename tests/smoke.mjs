@@ -1,6 +1,9 @@
 // Smoke test: loads the app in headless Chromium (software WebGL), drives every
-// scenario in every view for a moment, saves screenshots to tests/output and
-// fails on any page error.
+// scenario in every view for a moment, lets an autopilot drive a whole Farsta route,
+// saves screenshots to tests/output and fails on any page error.
+//
+// The Farsta scenario uses data/farsta.level.js when it exists. Without it (the map data has
+// not been downloaded yet), it uses a level built from the synthetic network in tests/fixtures.
 //
 //   npm install
 //   npm test
@@ -10,6 +13,7 @@ import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import { convert } from '../tools/osm-to-level.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const out = path.join(root, 'tests', 'output');
@@ -30,10 +34,19 @@ if (fs.existsSync(localThree)) {
   await page.route('**/three.min.js', (r) => r.fulfill({ path: localThree, contentType: 'application/javascript' }));
 }
 
-await page.goto('file://' + path.join(root, 'index.html'));
+const realData = fs.existsSync(path.join(root, 'data', 'farsta.level.js'));
+if (!realData) {
+  const cfg = JSON.parse(fs.readFileSync(path.join(root, 'tools', 'farsta.config.json'), 'utf8'));
+  const osm = JSON.parse(fs.readFileSync(path.join(root, 'tests', 'fixtures', 'mini.osm.json'), 'utf8'));
+  const level = convert(osm, cfg, { routeLength: [700, 4000] });
+  await page.addInitScript({ content: `window.FDL_FARSTA=${JSON.stringify(level)};` });
+  console.log('Farsta: no data/farsta.level.js, using the synthetic test network');
+}
+
+await page.goto('file://' + path.join(root, 'index.html') + '?test');
 await page.waitForTimeout(800);
 
-for (const lvl of ['roundabout', 'highway', 'country']) {
+for (const lvl of ['roundabout', 'highway', 'country', 'farsta']) {
   for (const view of ['driver', 'chase', 'map']) {
     if (await page.locator('#report').isVisible()) await page.click('#closeRep');
     await page.click(`.scard[data-lvl=${lvl}]`);
@@ -49,6 +62,41 @@ for (const lvl of ['roundabout', 'highway', 'country']) {
   }
 }
 
+// Farsta with the test autopilot (ten times real time). Without traffic it must drive the whole route and get
+// no serious faults, which checks routing, the guide path, events and scoring. With traffic it must keep moving
+// for two minutes of simulated driving without page errors.
+async function autopilot(view, traffic, simSeconds) {
+  if (await page.locator('#report').isVisible()) await page.click('#closeRep');
+  await page.click('.scard[data-lvl=farsta]');
+  await page.click(`#viewSeg [data-view=${view}]`);
+  await page.click('#goBtn');
+  await page.evaluate((t) => window.FDL_TEST.auto(true, 10, t), traffic);
+  const t0 = Date.now();
+  let st, shot = false;
+  while (Date.now() - t0 < 150000) {
+    st = await page.evaluate(() => window.FDL_TEST.state());
+    if (st.ended || st.time > simSeconds) break;
+    if (!shot && st.s > st.len * 0.3) { shot = true; await page.locator('.stage').screenshot({ path: path.join(out, `farsta-auto-${view}.png`) }); }
+    await page.waitForTimeout(400);
+  }
+  await page.evaluate(() => window.FDL_TEST.auto(false));
+  console.log(`Farsta autopilot, ${view} view, traffic ${traffic ? 'on' : 'off'}: ${st.route}, ${Math.round(st.s)} of ${Math.round(st.len)} m in ${st.time.toFixed(0)} s, ${st.ai} cars nearby, ended=${st.ended}`);
+  for (const f of st.faults) console.log('  ' + f);
+  return st;
+}
+{
+  const st = await autopilot('map', false, 1e9);
+  if (!st.ended || st.s < st.len - 20) errors.push('Farsta autopilot did not finish the route');
+  if (st.faults.some((f) => !f.startsWith('minor'))) errors.push('Farsta autopilot got a serious fault on a careful drive');
+  await page.screenshot({ path: path.join(out, 'farsta-report.png') });
+}
+{
+  // Not asserted: the autopilot is cautious and occasionally waits a long time at a busy junction.
+  await autopilot('driver', true, 120);
+  if (await page.locator('#report').isHidden()) { await page.keyboard.press('Space'); }
+}
+
+if (await page.locator('#report').isVisible()) await page.click('#closeRep');
 for (const tab of ['quiz', 'video', 'progress']) {
   await page.click(`nav [data-tab=${tab}]`);
   await page.waitForTimeout(200);

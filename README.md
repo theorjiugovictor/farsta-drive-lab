@@ -68,12 +68,21 @@ The Farsta scenario needs map data, which is not in the repository yet. Build it
 npm run osm          # = npm run osm:fetch && npm run osm:build
 ```
 
-- `tools/fetch-osm.mjs` asks the Overpass API for drivable roads, signals, crossings, give-way and stop nodes, bus stops, sign nodes and buildings in the box set in `tools/farsta.config.json`, and saves the raw answer to `data/farsta.osm.json`.
+- `tools/fetch-osm.mjs` asks the Overpass API for drivable roads, signals, crossings, give-way and stop nodes, bus stops, sign nodes and buildings in the areas set in `tools/farsta.config.json`, and saves the raw answer to `data/farsta.osm.json`. The areas are Farsta with Larsboda, Fagersjö, Hökarängen and Skarpnäck, old Enskede, Länna and Lissmavägen in Huddinge, Vega and Norrby in Haninge (all streets), and the main roads along Nynäsvägen (road 73) from Stockholm to Haninge.
 - `tools/osm-to-level.mjs` turns that into `data/farsta.level.json` and `data/farsta.level.js` (the same data as a script, so the app also works from `file://`). It projects to metres around the test centre, builds the junction graph, simplifies the roads, places signs and traffic lights, and generates three practice routes that start and end at the test centre.
 
 The app never calls Overpass itself. Commit the files in `data/` so GitHub Pages serves them.
 
-**Routes.** The generated routes are loops picked to cover roundabouts, traffic lights, unmarked junctions, zebra crossings and bus stops. They are not the examiners' routes. If your driving school tells you which roads the Farsta examiners use, add them to `routes` in `tools/farsta.config.json` as a name and a list of `[lat, lon]` waypoints, then run `npm run osm:build` again. The app also offers a random route.
+**Routes.** Four exam-style routes come from what students report about Farsta tests (Trafikverket does not publish routes, and they change):
+
+- Nynäsvägen south, exit towards Huddinge at Länna, out on Lissmavägen (country road), back on road 73
+- Nynäsvägen to Vega (roundabouts, the 40 road past Bauhaus)
+- Nynäsvägen to Norrby
+- Nynäsvägen towards Stockholm, back through Hökarängen
+
+Waypoints in `tools/farsta.config.json` name a road (`"road": "73"`, `"Lissmavägen"`), a driving direction for the right carriageway, or the nearest roundabout or junction to an approximate point, so they do not depend on exact coordinates. The build warns about any waypoint it cannot match. Check each route on the Map view after the first build and adjust the waypoints if one goes the wrong way. Three more routes are generated automatically to cover roundabouts, lights, unmarked junctions, zebra crossings and bus stops near the test centre, and the app also offers a random route.
+
+On Nynäsvägen the app scores joining (signal left, shoulder check, speed), lane changes (signal, mirrors, shoulder check, blind spot) and exits (signal and mirrors), and gives directions such as "In 400 m, take the exit towards Huddinge" from the exit's destination sign.
 
 **What the data cannot tell.** OpenStreetMap often lacks give-way signs. Where none is mapped, the app assumes that a smaller road gives way to a bigger one, applies högerregeln between equal small streets, and does not score priority between equal bigger roads. Traffic light timings are made up (two phases, about 36 seconds). Turn restrictions and lane arrows are not used yet.
 

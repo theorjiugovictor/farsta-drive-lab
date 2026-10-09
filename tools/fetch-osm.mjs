@@ -1,5 +1,5 @@
-// Downloads the roads, junction nodes, signs and buildings around the Farsta test centre from the
-// Overpass API and saves the raw response to data/farsta.osm.json. Run it once, then run
+// Downloads the roads, junction nodes, signs and buildings for the areas in tools/farsta.config.json
+// (Farsta and the places the examiners' routes go) from the Overpass API and saves the raw response to data/farsta.osm.json. Run it once, then run
 // tools/osm-to-level.mjs. The app never calls Overpass itself.
 //
 //   node tools/fetch-osm.mjs            (or: npm run osm:fetch)
@@ -11,18 +11,26 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cfg = JSON.parse(fs.readFileSync(path.join(root, 'tools', 'farsta.config.json'), 'utf8'));
-const [s, w, n, e] = cfg.bbox;
-const bb = `(${s},${w},${n},${e})`;
 const DRIVE = 'motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link';
+const MAIN = 'motorway|trunk|primary|secondary|tertiary|unclassified|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link';
+const bb = (b) => `(${b.join(',')})`;
+const parts = [];
+for (const a of cfg.areas) {
+  parts.push(`  way["highway"~"^(${a.roads === 'main' ? MAIN : DRIVE})$"]${bb(a.bbox)};`);
+  if (a.roads !== 'main') {
+    parts.push(`  node["highway"~"^(crossing|traffic_signals|give_way|stop|bus_stop)$"]${bb(a.bbox)};`);
+    parts.push(`  node["crossing"]${bb(a.bbox)};`);
+    parts.push(`  node["traffic_sign"]${bb(a.bbox)};`);
+  } else {
+    parts.push(`  node["highway"~"^(traffic_signals|give_way|stop)$"]${bb(a.bbox)};`);
+  }
+  if (a.buildings) parts.push(`  way["building"]${bb(a.bbox)};`);
+}
+parts.push(`  nwr["addr:street"="${cfg.centre.street}"]["addr:housenumber"="${cfg.centre.housenumber}"]${bb(cfg.areas[0].bbox)};`);
 
-export const query = `[out:json][timeout:180];
+export const query = `[out:json][timeout:300];
 (
-  way["highway"~"^(${DRIVE})$"]${bb};
-  node["highway"~"^(crossing|traffic_signals|give_way|stop|bus_stop)$"]${bb};
-  node["crossing"]${bb};
-  node["traffic_sign"]${bb};
-  way["building"]${bb};
-  nwr["addr:street"="${cfg.centre.street}"]["addr:housenumber"="${cfg.centre.housenumber}"]${bb};
+${parts.join('\n')}
 );
 out body;
 >;

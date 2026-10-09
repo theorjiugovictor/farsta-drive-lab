@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import '../src/osm-lib.js';
-import { convert, parseSpeed } from '../tools/osm-to-level.mjs';
+import { convert, parseSpeed, resolveWaypoint } from '../tools/osm-to-level.mjs';
 
 const OSM = globalThis.FDL_OSM;
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -140,4 +140,50 @@ test('traffic light phases alternate between crossing directions', () => {
     if (a !== 'R' && b !== 'R') both++;
   }
   assert.equal(both, 0, 'never green or amber in both directions at once');
+});
+
+test('waypoints by road name, heading and kind', () => {
+  const pj = OSM.projector(L.origin[0], L.origin[1]);
+  const ll = (e, n) => { const [x, y] = F(e, n); return pj.inv(x, y); };
+  const at = (n, e, nn) => { const [x, y] = F(e, nn); return Math.hypot(net.nodes[n].x - x, net.nodes[n].y - y) < 1.5; };
+  // southbound carriageway of road 73 near its south end: the edge ends at the south end node
+  assert.ok(at(resolveWaypoint(net, { road: '73', heading: 180, near: ll(560, -220) }, pj), 600, -300));
+  // northbound: the same place but heading north ends at the next node north on the other carriageway
+  assert.ok(at(resolveWaypoint(net, { road: '73', heading: 0, near: ll(560, -220) }, pj), 607, -120));
+  assert.ok(at(resolveWaypoint(net, { road: 'Norrlänken', near: ll(300, 300) }, pj), 250, 236));
+  assert.ok(at(resolveWaypoint(net, { kind: 'roundabout', near: ll(200, 40) }, pj), 235, 0));
+  assert.equal(resolveWaypoint(net, { road: 'No such road', near: ll(0, 0) }, pj), -1);
+});
+
+test('motorway: joining and exits', () => {
+  const pj = OSM.projector(L.origin[0], L.origin[1]);
+  const ll = (e, n) => { const [x, y] = F(e, n); return pj.inv(x, y); };
+  const st = net.startOptions(0, 0);
+  const go = (via) => { const nodes = via.map((w) => resolveWaypoint(net, w, pj)); for (const o of st) { const de = net.routeVia(o.de, nodes); if (de) return net.events(de, o.s); } return null; };
+  // from Storvägen onto the southbound carriageway: a merge onto Testleden
+  const ev = go([{ near: ll(560, 0) }, { road: '73', heading: 180, near: ll(560, -220) }]);
+  const mg = ev.find((e) => e.m === 'merge');
+  assert.ok(mg, 'merge event'); assert.equal(mg.name, 'Testleden');
+  // in from the north end, off at the interchange: an exit signed Farsta
+  const ev2 = go([{ road: 'Norrlänken', near: ll(400, 290) }, { road: '73', heading: 180, near: ll(560, 200) }, { near: ll(560, 0) }]);
+  const ex = ev2.find((e) => e.m === 'exit');
+  assert.ok(ex, 'exit event'); assert.equal(ex.name, 'Farsta');
+  // a slip road gives way where it ends at a bigger road
+  assert.equal(OSM.tier('motorway_link'), 2);
+});
+
+test('custom routes from the config are built through their waypoints', () => {
+  const pj = OSM.projector(59.2403, 18.0972);
+  const ll = (e, n) => { const [x, y] = F(e, n); return pj.inv(x, y); };
+  const cfg2 = { ...cfg, routes: [
+    { name: 'Testleden loop', via: [{ road: '73', heading: 180, near: ll(560, -220) }, { road: 'Söderlänken', near: ll(400, -250) }] },
+    { name: 'Broken', via: [{ road: 'Nowhere', near: ll(0, 0) }] },
+  ] };
+  const logs = [];
+  const L2 = convert(osm, cfg2, { routeLength: [700, 4000], log: (m) => logs.push(m) });
+  const r = L2.routes.find((x) => x.name === 'Testleden loop');
+  assert.ok(r, 'route built');
+  assert.match(r.desc, /motorway|km/);
+  assert.ok(!L2.routes.some((x) => x.name === 'Broken'));
+  assert.ok(logs.some((m) => /Broken/.test(m) && /matched nothing/.test(m)), 'warns about the broken route');
 });

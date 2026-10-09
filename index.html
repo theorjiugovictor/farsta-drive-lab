@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Farsta Drive Lab</title>
+<meta name="description" content="Practice for the Swedish driving test (körprov B): anticipation, positioning and speed, scored like the examiner. Desktop, mobile and Meta Quest VR.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Overpass:wght@400;600;800&family=Overpass+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <svg class="mark" viewBox="0 0 44 40" aria-hidden="true"><path d="M22 3 L41 36 H3 Z" fill="#f4c514" stroke="#c8102e" stroke-width="4" stroke-linejoin="round"/><path d="M14 30 C18 20, 26 26, 30 16" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round"/></svg>
+    <div>
+      <h1>Farsta Drive Lab</h1>
+      <p class="sub">Practice for körprov B: anticipation, positioning and speed, scored like the examiner.</p>
+    </div>
+  </header>
+
+  <nav role="tablist">
+    <button role="tab" data-tab="drive" aria-selected="true">Drive practice</button>
+    <button role="tab" data-tab="quiz" aria-selected="false">Positioning quiz</button>
+    <button role="tab" data-tab="video" aria-selected="false">Video drills</button>
+    <button role="tab" data-tab="progress" aria-selected="false">Progress</button>
+  </nav>
+
+  <section id="tab-drive">
+    <div class="drive">
+      <aside class="rail">
+        <div>
+          <p class="eyebrow">Scenario</p>
+          <div class="scen">
+            <button class="scard" data-lvl="roundabout" aria-pressed="true"><span class="sw">Cirkulationsplats</span><b>Roundabout</b><span>Lane position for your exit, giving way to the left, zebra crossings, signalling out.</span></button>
+            <button class="scard" data-lvl="highway" aria-pressed="false"><span class="sw">Avfart motorväg</span><b>Motorway exit</b><span>A slow truck with a queue in front. Overtake or not, lane changes with checks, braking in the exit lane.</span></button>
+            <button class="scard" data-lvl="country" aria-pressed="false"><span class="sw">Landsväg</span><b>Country road</b><span>Bends, a cyclist with oncoming traffic, a car at a side road, a bus leaving its stop.</span></button>
+          </div>
+        </div>
+        <div>
+          <p class="eyebrow">Mode</p>
+          <div class="seg" id="modeSeg">
+            <button data-mode="coach" aria-pressed="true">Coach</button>
+            <button data-mode="test" aria-pressed="false">Test</button>
+          </div>
+          <p class="note" id="modeNote">Coach shows hints and faults as they happen. Test is silent like the examiner, and you only see the report at the end.</p>
+        </div>
+        <div>
+          <p class="eyebrow">View</p>
+          <div class="seg" id="viewSeg">
+            <button data-view="driver" aria-pressed="true">Driver</button>
+            <button data-view="chase" aria-pressed="false">Chase</button>
+            <button data-view="map" aria-pressed="false">Map</button>
+          </div>
+          <p class="note" id="viewNote">Driver view puts you in the driver's seat. The mirrors stay dark until you glance at them (W), and A or D turns your head for a shoulder check.</p>
+        </div>
+        <div>
+          <p class="eyebrow">Meta Quest</p>
+          <button class="btn" id="vrBtn" disabled style="width:100%">Drive in VR</button>
+          <p class="note" id="vrNote">VR opens when this app runs in the Meta Quest browser from its own web address.</p>
+          <dl class="keys" style="margin-top:8px">
+            <dt>L stick</dt><dd>Steer</dd>
+            <dt>R trigger</dt><dd>Gas</dd>
+            <dt>L trigger</dt><dd>Brake</dd>
+            <dt>Grips</dt><dd>Signal left / right</dd>
+            <dt>A</dt><dd>Hold current speed</dd>
+            <dt>X</dt><dd>Start, pause, drive again</dd>
+            <dt>Y</dt><dd>Recenter your seat</dd>
+            <dt>Head</dt><dd>Look into a mirror or over your shoulder to check</dd>
+          </dl>
+        </div>
+        <label class="field" id="exitField">Roundabout exit
+          <select id="exitSel"><option value="0">Random</option><option value="1">1st exit (right)</option><option value="2">2nd exit (straight)</option><option value="3">3rd exit (left)</option></select>
+        </label>
+        <div>
+          <p class="eyebrow">Keyboard</p>
+          <dl class="keys">
+            <dt>↑ ↓</dt><dd>Gas and brake</dd>
+            <dt>← →</dt><dd>Steer</dd>
+            <dt>Q / E</dt><dd>Signal left / right</dd>
+            <dt>W</dt><dd>Look in the mirrors (hold to keep looking)</dd>
+            <dt>A / D</dt><dd>Turn your head left / right (hold)</dd>
+            <dt>C</dt><dd>Hold current speed</dd>
+            <dt>V</dt><dd>Change view</dd>
+            <dt>Space</dt><dd>Start or pause</dd>
+          </dl>
+          <p class="note">You only learn what is behind you by checking. In Chase and Map views, cars behind stay hidden until you check.</p>
+        </div>
+      </aside>
+
+      <div class="stagewrap">
+        <div class="stage">
+          <canvas id="cv" tabindex="0" aria-label="Driving simulator"></canvas>
+          <div class="hud">
+            <div class="dash ck"></div>
+            <svg class="wheel ck" id="wheel" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="43" fill="none" stroke="#1d2024" stroke-width="9"/><circle cx="50" cy="50" r="43" fill="none" stroke="#2c3036" stroke-width="2"/><path d="M8 52 L36 57 M92 52 L64 57 M50 66 L50 93" stroke="#1d2024" stroke-width="8" stroke-linecap="round"/><circle cx="50" cy="55" r="14" fill="#1b1e22"/><rect x="47.5" y="3" width="5" height="9" rx="1" fill="#f4c514"/></svg>
+            <div class="mirror ck" id="mRear">W</div>
+            <div class="mirror ck" id="mL">W</div>
+            <div class="mirror ck" id="mR">W</div>
+            <div class="instr"><div class="dir" id="hudDir"></div><div class="hint" id="hudHint" hidden></div></div>
+            <div class="limit" id="hudLim">40</div>
+            <div class="speedo"><b id="hudSpd">0</b><span>km/h</span><span class="cr" id="hudCr" hidden>HOLD</span></div>
+            <div class="checks">
+              <span class="chip sig" id="cL">◀</span>
+              <span class="chip" id="cSL">Left</span>
+              <span class="chip" id="cM">Mirrors</span>
+              <span class="chip" id="cSR">Right</span>
+              <span class="chip sig" id="cR">▶</span>
+            </div>
+            <div class="toast" id="toast" hidden></div>
+            <div class="banner" id="banner" hidden>Examiner intervened<br><small>Ingripande</small></div>
+          </div>
+          <div class="overlay" id="overlay"><div class="box" id="overlayBox"></div></div>
+        </div>
+        <div class="pad" id="pad">
+          <button data-tap="sigL">◀ Signal</button>
+          <button data-tap="lookL">Look left</button>
+          <button data-tap="mirror">Mirrors</button>
+          <button data-tap="lookR">Look right</button>
+          <button data-tap="sigR">Signal ▶</button>
+          <button data-hold="left">◀ Steer</button>
+          <button data-hold="right">Steer ▶</button>
+          <button data-tap="cruise">Hold speed</button>
+          <button data-hold="down" class="brake">Brake</button>
+          <button data-hold="up" class="gas">Gas</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-quiz" hidden>
+    <div class="quiz">
+      <div class="qfig" id="qFig"></div>
+      <div class="qbody">
+        <div class="qmeta"><span id="qNum"></span><span id="qScore"></span></div>
+        <h2 id="qText"></h2>
+        <div class="opts" id="qOpts"></div>
+        <div class="why" id="qWhy" hidden></div>
+        <div class="row"><button class="btn" id="qNext" hidden>Next question</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-video" hidden>
+    <div class="vtop">
+      <p>Load a dashcam clip from your device, for example a recording of a Farsta test route. Tag the moments where something develops, then drill them: tap the instant you spot it, earlier scores higher, and answer how you would adjust speed and position. YouTube cannot play inside this page, so use a saved clip.</p>
+      <div class="row">
+        <label class="btn ghost" for="vFile" style="display:inline-block">Choose video</label>
+        <input type="file" id="vFile" accept="video/*" hidden>
+        <div class="seg" id="vMode" style="min-width:180px"><button data-vm="tag" aria-pressed="true">Tag</button><button data-vm="drill" aria-pressed="false">Drill</button></div>
+      </div>
+    </div>
+    <div class="vgrid" style="margin-top:14px">
+      <div class="vstage" id="vStage">
+        <video id="vid" playsinline controls hidden></video>
+        <div class="vempty" id="vEmpty">No clip loaded yet. Choose a dashcam video to start tagging hazards.</div>
+        <div class="vcard" id="vCard" hidden></div>
+      </div>
+      <aside class="vside">
+        <button class="big" id="vAction" disabled>Mark a hazard here (H)</button>
+        <div class="panel"><p class="eyebrow" id="vListTitle">Tagged moments</p><ul class="taglist" id="vTags"><li class="empty">Nothing tagged yet.</li></ul></div>
+        <div class="panel" id="vStats" hidden></div>
+      </aside>
+    </div>
+  </section>
+
+  <section id="tab-progress" hidden>
+    <div id="progBody"></div>
+  </section>
+</div>
+
+<div class="modal" id="report" hidden><div class="sheet" id="reportBody"></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="src/app.js"></script>
+</body>
+</html>

@@ -36,7 +36,10 @@ function simplify(pts,tol){
 /* road classes */
 const TIER={motorway:4,trunk:4,primary:3,secondary:3,tertiary:2,unclassified:1,residential:1,living_street:0,service:0};
 const base=hw=>String(hw||'').replace('_link','');
-const tier=hw=>{const t=TIER[base(hw)]; return t==null?1:t;};
+/* slip roads rank like a tertiary road, so the end of an off-ramp gives way to a bigger road */
+const tier=hw=>{const t=TIER[base(hw)], v=t==null?1:t; return String(hw||'').endsWith('_link')?Math.min(v,2):v;};
+const isLink=w=>String(w.hw||'').endsWith('_link');
+const isFast=w=>w.hw==='motorway'||(w.hw==='trunk'&&w.ow);
 /* Limits used where OSM has no maxspeed: 50 is the Swedish default in built-up areas,
    gårdsgata (living_street) is walking pace. Service roads have no legal limit, 30 is practical. */
 function defaultLimit(hw){ const b=base(hw); return b==='motorway'?110:b==='trunk'?70:b==='living_street'?7:b==='service'?30:50; }
@@ -129,7 +132,7 @@ NP.nearest=function(x,y,maxD,filter){
       const [ax,ay]=e.pts[k],[bx,by]=e.pts[k+1], dx=bx-ax, dy=by-ay, L2=dx*dx+dy*dy;
       let t=L2?((x-ax)*dx+(y-ay)*dy)/L2:0; t=Math.max(0,Math.min(1,t));
       const px=ax+dx*t, py=ay+dy*t, d=(x-px)**2+(y-py)**2;
-      if(d<bd){ bd=d; best={e,k,t,d:0,x:px,y:py,s:e.cum[k]+t*Math.sqrt(L2),h:hdg(dx,dy),half:e.half,way:e.way}; }
+      if(d<bd){ const L=Math.sqrt(L2)||1; bd=d; best={e,k,t,d:0,x:px,y:py,s:e.cum[k]+t*L,h:hdg(dx,dy),half:e.half,way:e.way,lat:(x-px)*(-dy/L)+(y-py)*(dx/L)}; }
     }
   }
   if(best) best.d=Math.sqrt(bd);
@@ -324,6 +327,14 @@ NP.events=function(des,s0,ends){
           for(const p of passed) push({t:'rbx',node:p.node,x:this.nodes[p.node].x,y:this.nodes[p.node].y,s:p.s,idx:p.idx,n:cnt+1},p.j);
           push({t:'rbout',node:m,x:this.nodes[m].x,y:this.nodes[m].y,s,n:cnt+1,k:j},j-1);
         }
+      } else if(!this.rb(de)&&!this.rb(nx)&&isFast(e.way)&&isLink(this.way(nx))){
+        // leaving a motorway: name the exit by its destination sign, else by the road it leads to
+        let j=k+1; while(j<des.length-1&&isLink(this.way(des[j]))) j++;
+        const lw=this.way(nx), nm=lw.ds||this.way(des[j]).n||this.way(des[j]).ref||'';
+        push({t:'node',m:'exit',node:n,x:N.x,y:N.y,s:sEnd,k,dir:'exit',angle:angDiff(this.hOut(nx),this.hIn(de)),ctrl:'major',name:nm},k);
+      } else if(!this.rb(de)&&!this.rb(nx)&&isLink(e.way)&&isFast(this.way(nx))&&!isFast(e.way)){
+        const fw=this.way(nx);
+        push({t:'node',m:'merge',node:n,x:N.x,y:N.y,s:sEnd,k,dir:'merge',angle:angDiff(this.hOut(nx),this.hIn(de)),ctrl:'merge',name:fw.n||(fw.ref?'road '+fw.ref:'')},k);
       } else if(!this.rb(de)&&!this.rb(nx)&&this.deg[n]>=3){
         const d=angDiff(this.hOut(nx),this.hIn(de)), dir=Math.abs(d)>2.6?'back':d>0.55?'right':d<-0.55?'left':'straight';
         const ctrl=this.control(de,n);
@@ -339,7 +350,7 @@ NP.events=function(des,s0,ends){
 };
 NP.rbMulti=function(de){ return (this.way(de).ln||1)>1; };
 NP.stats=function(des,s0){
-  const ev=this.events(des,s0), st={len:0,rb:0,sig:0,right:0,yield:0,zebra:0,bus:0,left:0,rightTurn:0,repeat:0,back:0};
+  const ev=this.events(des,s0), st={len:0,rb:0,sig:0,right:0,yield:0,zebra:0,bus:0,left:0,rightTurn:0,repeat:0,back:0,mw:0};
   st.len=des.reduce((a,d)=>a+this.len(d),0)-(s0||0);
   const seenSig=new Set();
   for(const e of ev){
@@ -349,6 +360,7 @@ NP.stats=function(des,s0){
     if(e.t==='bus'&&e.lim<=50) st.bus++;
     if(e.t==='node'&&e.m==='turn'){ if(e.ctrl==='right') st.right++; if(e.ctrl==='yield'||e.ctrl==='give_way'||e.ctrl==='stop') st.yield++; if(e.dir==='left') st.left++; if(e.dir==='right') st.rightTurn++; if(e.dir==='back') st.back++; }
     if(e.t==='node'&&e.m==='rb'&&(e.dir==='back'||e.n>4)) st.back++;
+    if(e.t==='node'&&e.m==='exit') st.mw++;
   }
   const seen=new Set(); des.forEach((d,i)=>{ if(seen.has(d>>1)) st.repeat++; seen.add(d>>1); if(i&&(d>>1)===(des[i-1]>>1)) st.back++; });
   return st;
@@ -417,5 +429,5 @@ NP.lightState=function(cl,grp,t){
   const u=(((t+C.off)%34)+34)%34; return u<20?{st:'G',t:u}:u<23?{st:'Y',t:u-20}:{st:'R',t:u-23};
 };
 
-globalThis.FDL_OSM={projector,simplify,tier,defaultLimit,wayLimit,laneOffset,rng,angDiff,hdg,Net,Heap};
+globalThis.FDL_OSM={projector,simplify,tier,isLink,isFast,defaultLimit,wayLimit,laneOffset,rng,angDiff,hdg,Net,Heap};
 })();

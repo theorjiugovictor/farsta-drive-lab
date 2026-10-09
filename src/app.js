@@ -508,7 +508,7 @@ const OSM={
     }
     if(!r) r=FD.routes[0];
     this.route=r; this.goal=net.from(r.de[0]);
-    Object.assign(this,{gen:0,offT:0,wrongT:0,orT:0,spawnT:0,res:new Map(),specials:0,reroutes:0,near:null,ps:0});
+    Object.assign(this,{gen:0,offT:0,wrongT:0,orT:0,spawnT:0,res:new Map(),specials:0,reroutes:0,near:null,ps:0,lane:null,laneEdge:null});
     S.ai=[]; S.peds=[];
     this.setRoute(r.de,r.s0);
     const p0=this.path.pts[0]; S.car=mkCar(p0.x,p0.y,Math.atan2(p0.tx,-p0.ty),0);
@@ -522,6 +522,7 @@ const OSM={
     let z=0,prev=null;
     path.pts.forEach((p,i)=>{ const q=pp.pts[i]; p.w=q.w; p.rb=q.rb; p.lim=OL.wayLimit(FD.ways[q.w]); if(prev!=null&&p.lim!==prev) z++; prev=p.lim; p.z=z; });
     this.path=path; this.de=de; this.hint=null; this.prevS=null; this.gen++;
+    this.endS=pp.ends.map(i=>path.pts[Math.min(i,path.pts.length-1)].s);
     const ev=net.events(de,s0,pp.ends);
     for(const e of ev){ e.s=project(path,e.x,e.y,e.pi).s; e.key=this.gen+'_'+e.id; }
     ev.sort((a,b)=>a.s-b.s);
@@ -540,9 +541,17 @@ const OSM={
     S.peds.push({id:Math.random(),a:e.a,ox:e.x,oy:e.y,half,lat:side*half,dir:-side,state:'wait',ev:e,x:e.x,y:e.y,
       trigger:()=>{ const d=e.s-this.ps; return d>0&&d<Math.max(22,S.car.v*4.2); }});
   },
+  /* after a wrong turn: rejoin the planned route a bit further on, so the examiner's route continues;
+     if that is not possible, go back to the test centre */
   reroute(){
-    const c=S.car, st=this.net.nearestDe(c.x,c.y,c.h,15); if(!st) return;
-    const r=this.net.route(st.de,this.goal); if(!r) return;
+    const c=S.car, net=this.net, st=net.nearestDe(c.x,c.y,c.h,15); if(!st) return;
+    let r=null;
+    for(let k=0;k<this.de.length&&!r;k++){
+      if(this.endS[k]<this.ps+120) continue;
+      const seg=net.route(st.de,net.to(this.de[k])); if(seg) r=seg.concat(this.de.slice(k+1));
+      if(this.endS[k]>this.ps+3000) break;
+    }
+    if(!r) r=net.route(st.de,this.goal); if(!r) return;
     S.peds=S.peds.filter(p=>p.state==='cross');
     this.setRoute(r,st.s); this.reroutes++;
     if(S.mode==='coach'){ S.hint='You left the planned route. That is not a fault on its own: follow the new directions.'; S.hintT=S.time; }
@@ -552,6 +561,8 @@ const OSM={
     if(nx&&nx.s-s<320){
       const d=nx.s-s, pre=d>30?`In ${Math.max(10,Math.round(d/10)*10)} m, `:'', onto=nx.name?` onto ${nx.name}`:'';
       if(nx.m==='rb') return capFirst(`${pre}at the roundabout, take the ${ORD[nx.n]||nx.n+'th'} exit${onto}`);
+      if(nx.m==='exit') return capFirst(`${pre}take the exit${nx.name?` towards ${nx.name}`:''}`);
+      if(nx.m==='merge') return capFirst(`${pre}join ${nx.name||'the motorway'}`);
       if(nx.dir==='straight') return capFirst(`${pre}straight ahead ${nx.ctrl==='signals'?'at the lights':'at the junction'}`);
       if(nx.dir==='back') return capFirst(`${pre}turn around where it is safe`);
       return capFirst(`${pre}turn ${nx.dir}${nx.ctrl==='signals'?' at the lights':''}${onto}`);
@@ -565,7 +576,9 @@ const OSM={
       if(e.t==='node'&&e.m==='rb'){
         const plan=e.dir==='right'?'Going right: signal right already now and keep to the right part of your lane.':e.dir==='left'?'Going left: keep to the left part of your lane, close to the centre line.':'Going straight: keep to the middle of your lane. No signal on the way in.';
         H.push({when:near(e,160),t:`Roundabout ahead, ${ORD[e.n]||e.n+'th'} exit. ${plan} Give way to traffic already in it.`});
-      } else if(e.t==='node'){
+      } else if(e.t==='node'&&e.m==='exit') H.push({when:near(e,450),t:'Exit coming up: mirrors, signal right, shoulder check, move into the exit lane at motorway speed, then brake in the exit lane.'});
+      else if(e.t==='node'&&e.m==='merge') H.push({when:near(e,160),t:'Slip road: get up to the speed of the traffic, signal left, look over your left shoulder and merge into a gap.'});
+      else if(e.t==='node'){
         let t='';
         if(e.dir==='left') t='Left turn ahead: mirrors, signal left early and move towards the centre line.';
         else if(e.dir==='right') t='Right turn ahead: mirrors, signal right, keep right and look over your right shoulder for cyclists.';
@@ -590,7 +603,15 @@ const OSM={
     const nr=this.near=net.nearest(c.x,c.y,30);
     if(!nr||nr.d>nr.half+1.8){ this.offT+=dt; if(this.offT>0.25){ fault('maneuver','Left the road','intervention','off'); return; } } else this.offT=0;
     if(nr&&nr.way.ow&&nr.d<nr.half&&c.v>1.5&&Math.cos(angDiff(c.h,nr.h))<-0.3){ this.wrongT+=dt; if(this.wrongT>1){ fault('rules','Drove against the direction of a one-way street','intervention','wrongway'); return; } } else this.wrongT=0;
-    if(pr.dist>8&&c.v>0.5&&nr&&nr.d<nr.half+0.5){ this.orT+=dt; if(this.orT>0.8){ this.orT=0; this.reroute(); return; } } else this.orT=0;
+    // lane changes on one-way roads with several lanes (motorway, ramps, big streets)
+    if(nr&&nr.way.ow&&nr.way.ln>1&&!nr.way.rb&&nr.d<nr.half&&Math.cos(angDiff(c.h,nr.h))>0.8){
+      const ln=nr.way.ln, f=(nr.lat+nr.way.w/2)/(nr.way.w/ln);
+      if(this.lane==null||this.laneEdge!==nr.e||nr.s<25||nr.s>nr.e.len-25) this.lane=clamp(Math.floor(f),0,ln-1);   // not scored near junctions
+      else if(f<this.lane-0.15&&this.lane>0){ laneChangeCheck(this.lane,this.lane-1); this.lane--; }
+      else if(f>this.lane+1.15&&this.lane<ln-1){ laneChangeCheck(this.lane,this.lane+1); this.lane++; }
+      this.laneEdge=nr.e;
+    } else this.lane=null;
+    if(pr.dist>6+(nr?nr.half:2)&&c.v>0.5&&nr&&nr.d<nr.half+0.5){ this.orT+=dt; if(this.orT>0.8){ this.orT=0; this.reroute(); return; } } else this.orT=0;
     this.checks(s,prev,pr.lat);
     this.traffic(dt);
     S.instr=this.instrText();
@@ -637,6 +658,17 @@ const OSM={
         if(e.spawnRing&&!this.noScripted&&!e.spawned&&d<80&&d>20&&d/Math.max(c.v,3)<4.5){ e.spawned=true; this.spawnRing(e); }
         if(cross(e.s)){ const v=this.ringConflict(e.node,c,2); if(v&&v.v>1){ if(Math.hypot(v.x-c.x,v.y-c.y)<9) fault('interact','Entered right in front of a car already in the roundabout','intervention','ryI'+K); else fault('interact','Did not give way to traffic already in the roundabout','serious','ry'+K,'Traffic in the roundabout comes from your left and has priority. Look left early and arrive slowly enough to stop.'); } }
         if(d<0&&e.out&&s<e.out.s&&kmh>32) fault('speed','Too fast in the roundabout','minor','rring'+K,'Around 20 to 30 km/h in a small roundabout.');
+      } else if(e.t==='node'&&e.m==='exit'){
+        if(cross(e.s-8)){
+          if(S.time-c.lastRight>1.5) fault('rules','No right signal before taking the exit','minor','xs'+K,'Signal right in good time before the exit lane, after a mirror check.');
+          if(c.mirrorAgo>8) fault('attention','No mirror check before the exit','minor','xm'+K,'Mirrors, signal, shoulder check, then move into the exit lane.');
+        }
+      } else if(e.t==='node'&&e.m==='merge'){
+        if(cross(e.s+5)){
+          if(S.time-c.lastLeft>3) fault('rules','No left signal when joining the motorway','minor','ms'+K,'Signal left on the slip road so traffic on the motorway sees you are coming.');
+          if(c.lookLAgo>5) fault('attention','No shoulder check to the left when joining the motorway','minor','ml'+K,'Look over your left shoulder before you merge: the blind spot hides cars in the lane you are joining.');
+          const lim=this.path.pts[idxAt(this.path,e.s+30)].lim; if(kmh<lim-25) fault('speed','Joined the motorway far below the speed of the traffic','minor','mv'+K,'Use the whole slip road to get up to the speed of the traffic before you merge.');
+        }
       } else if(e.t==='rbx'){
         if(cross(e.s-2.5)&&c.ind===1) fault('interact',`Signalled right before passing the ${ORD[e.idx]} exit, which is not yours`,'minor','rx'+K,'Signal right only after you pass the exit before yours, so drivers waiting there do not think you are leaving.');
       } else if(e.t==='rbout'){
@@ -1328,7 +1360,7 @@ const BRIEF={
   roundabout:'A one-lane roundabout with zebra crossings on every arm. Approach at 40, pick the right spot in your lane for your exit, give way to the left, and signal right on the way out.',
   highway:'You start at 100 km/h in the right lane. A truck is ahead with a tight queue in front of it, and your exit comes up in about 1.4 km. Decide well, check before every lane change, and brake in the exit lane.',
   country:'An 80 road through forest into a village. Bends, a cyclist, a car waiting at a side road and a bus at its stop. Read each situation before you reach it.',
-  farsta:()=>`The real streets around ${escapeHtml(FD.centre.name)}, from OpenStreetMap. <b>${escapeHtml(OSM.route.name)}</b>${OSM.route.desc?` (${escapeHtml(OSM.route.desc)})`:''}. You start at the test centre, standing still. Follow the directions at the top as you would the examiner's, and expect traffic lights, give-way rules and pedestrians.`
+  farsta:()=>`The real streets around ${escapeHtml(FD.centre.name)}, from OpenStreetMap. <b>${escapeHtml(OSM.route.name)}</b>${OSM.route.desc?` (${escapeHtml(OSM.route.desc)})`:''}.${OSM.route.note?` ${escapeHtml(OSM.route.note)}`:''} You start at the test centre, standing still. Follow the directions at the top as you would the examiner's, and expect traffic lights, give-way rules and pedestrians.`
 };
 function showOverlay(kind){
   const ov=$('#overlay'),box=$('#overlayBox');
@@ -1403,7 +1435,7 @@ function autoDrive(){
   }
   for(const e of lv.ev){
     const d=e.s-pr.s; if(d<-15||d>45) continue;
-    if(d<0){ if(e.t==='node') vt=Math.min(vt,Math.abs(e.angle||0)>1.1&&d>-8?3:6.5); continue; }
+    if(d<0){ if(e.t==='node'&&(e.m==='turn'||e.m==='rb')) vt=Math.min(vt,Math.abs(e.angle||0)>1.1&&d>-8?3:6.5); continue; }
     if(e.t==='light'){ const st=lv.net.lightState(e.cl,e.grp,S.time); if(st.st==='R'||(st.st==='Y'&&d>c.v*c.v/8)) vt=Math.min(vt,stopAt(d)); }
     if(e.t==='node'&&e.m==='rb'){ vt=Math.min(vt,6+d*0.25); if(d>2&&lv.ringConflict(e.node,c)) vt=Math.min(vt,stopAt(d-3)); }
     if(e.t==='node'&&e.m==='turn'){
@@ -1419,7 +1451,7 @@ function autoDrive(){
   // signals and checks like a careful driver
   let sig=0; const nx=lv.nodes.find(e=>e.s>pr.s-4), inRb=lv.nodes.find(e=>e.m==='rb'&&e.s<pr.s&&e.out&&pr.s<e.out.s+2);
   if(inRb) sig=lv.ev.some(x=>x.t==='rbx'&&x.s>pr.s-3&&x.s<inRb.out.s)?0:1;
-  else if(nx&&nx.s-pr.s<75){ sig=nx.m==='rb'?(nx.n===1&&nx.dir==='right'?1:0):nx.dir==='left'?-1:nx.dir==='right'?1:0; if(nx.s-pr.s<55){ c.mirrorAgo=0; if(sig===1) c.lookRAgo=0; } }
+  else if(nx&&nx.s-pr.s<75){ sig=nx.m==='rb'?(nx.n===1&&nx.dir==='right'?1:0):nx.dir==='left'||nx.m==='merge'?-1:nx.dir==='right'||nx.m==='exit'?1:0; if(nx.s-pr.s<55){ c.mirrorAgo=0; if(sig===1) c.lookRAgo=0; if(nx.m==='merge') c.lookLAgo=0; } }
   if(sig&&c.ind!==sig) toggleInd(sig); else if(!sig&&c.ind) toggleInd(c.ind);
   if(inRb&&sig) c.mirrorAgo=0;
   S.gp={st:clamp(want/(0.62/(1+c.v*0.22)),-1,1),thr:c.v<vt-0.4?0.7:0,brk:c.v>vt+0.3?clamp((c.v-vt)*0.25,0.1,0.6):0};

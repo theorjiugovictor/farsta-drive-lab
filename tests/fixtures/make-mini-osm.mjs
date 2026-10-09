@@ -35,11 +35,25 @@ node('Z2', 200, 0, { highway: 'crossing', crossing: 'zebra' });
 const ring = [];
 for (let i = 0; i < 12; i++) { const a = Math.PI + i * Math.PI / 6; const nm = 'R' + i; node(nm, 250 + 15 * Math.cos(a), 15 * Math.sin(a)); ring.push(nm); }
 // R0 = west (180 deg), R3 = south (270), R6 = east (0), R9 = north (90)
-node('E1', 500, 0);
+node('E1', 500, 0); node('IX', 560, 0);
 way(['A', 'S1'], { highway: 'secondary', name: 'Storvägen', maxspeed: '40' });
 way(['S1', 'BUSN', 'SIG_W', 'J1', 'SIG_E', 'J3', 'Z1', 'J2', 'Z2', 'R0'], { highway: 'secondary', name: 'Storvägen', maxspeed: '50' });
 way([...ring.slice(0), 'R0'], { highway: 'secondary', junction: 'roundabout', name: 'Storvägen' });
-way(['R6', 'E1'], { highway: 'secondary', name: 'Storvägen', maxspeed: '50' });
+way(['R6', 'E1', 'IX'], { highway: 'secondary', name: 'Storvägen', maxspeed: '50' });
+// Testleden: a motorway (ref 73) with two carriageways, an interchange with Storvägen at IX and
+// ordinary roads at both ends, so it can be driven in loops
+const mw = { highway: 'motorway', ref: '73', name: 'Testleden', maxspeed: '90', lanes: '2' };
+const link = (dest) => ({ highway: 'motorway_link', oneway: 'yes', maxspeed: '70', ...(dest ? { destination: dest } : {}) });
+node('MS', 600, -300); node('MN', 600, 300);
+node('NB1', 607, -280); node('NBdiv', 607, -120); node('NBmrg', 607, 120); node('NB2', 607, 280);
+node('SB1', 593, 280); node('SBdiv', 593, 120); node('SBmrg', 593, -120); node('SB2', 593, -280);
+way(['MS', 'NB1', 'NBdiv', 'NBmrg', 'NB2', 'MN'], mw);
+way(['MN', 'SB1', 'SBdiv', 'SBmrg', 'SB2', 'MS'], mw);
+node('NBoff', 585, -60); node('NBon', 585, 60); node('SBoff', 572, 50); node('SBon', 572, -50);
+way(['NBdiv', 'NBoff', 'IX'], link('Farsta'));
+way(['IX', 'NBon', 'NBmrg'], link());
+way(['SBdiv', 'SBoff', 'IX'], link('Farsta'));
+way(['IX', 'SBon', 'SBmrg'], link());
 // Tvärgatan with signals on the side approaches
 node('T_S', -150, -300); node('SIG_S', -150, -12, { highway: 'traffic_signals' }); node('SIG_N', -150, 12, { highway: 'traffic_signals' });
 node('T_O', -150, 250); node('T_N', -150, 400);
@@ -57,6 +71,9 @@ way(['R9', 'RN1', 'RN2', 'RN3', 'RN'], { highway: 'residential', name: 'Norra v�
 way(['R3', 'RS1', 'RS2', 'RS3', 'RS'], { highway: 'residential', name: 'Södra vägen' });
 // Övre gatan: unmarked junctions
 way(['T_O', 'B_O', 'RN'], { highway: 'residential', name: 'Övre gatan' });
+// ordinary roads from the motorway ends back into town
+way(['MN', 'RN1'], { highway: 'tertiary', name: 'Norrlänken', maxspeed: '50' });
+way(['MS', 'RS1'], { highway: 'tertiary', name: 'Söderlänken', maxspeed: '50' });
 // one-way street back west
 way(['RS', 'F_S'], { highway: 'residential', name: 'Enkelgatan', oneway: 'yes' });
 // a car park road that must be ignored and a footway that must be ignored

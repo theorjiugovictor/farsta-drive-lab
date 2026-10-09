@@ -49,6 +49,38 @@ function zebraTags(t) {
   return !!(m && m !== 'no');
 }
 
+const roadMatch = (w, road) => road == null || w.n === road || String(w.ref || '').split(/[;,]\s*/).includes(String(road));
+
+/** Resolve a route waypoint from the config to a graph node index, or -1. See the comment in farsta.config.json. */
+export function resolveWaypoint(net, wp, pj) {
+  if (Array.isArray(wp)) { const [x, y] = pj.fwd(wp[0], wp[1]); return net.snapNode(x, y, 60); }
+  const [x, y] = pj.fwd(wp.near[0], wp.near[1]);
+  const R = wp.radius || (wp.road != null || wp.kind ? 1500 : 60);
+  if (wp.heading != null) {
+    const h = wp.heading * Math.PI / 180;
+    let best = null;
+    for (const e of net.E) {
+      if (!roadMatch(e.way, wp.road)) continue;
+      for (const de of e.way.ow ? [2 * e.i] : [2 * e.i, 2 * e.i + 1]) {
+        const L = net.len(de), p = net.pointAt(de, L / 2), d = Math.hypot(p.x - x, p.y - y);
+        if (d > R || Math.cos(OSM.angDiff(OSM.hdg(p.tx, p.ty), h)) < 0.7) continue;
+        if (!best || d < best.d) best = { d, n: net.to(de) };
+      }
+    }
+    return best ? best.n : -1;
+  }
+  let best = -1, bd = R;
+  net.nodes.forEach((N, i) => {
+    if (!net.deg[i]) return;
+    const ds = net.out[i].concat(net.inc[i]);
+    if (wp.road != null && !ds.some((d) => roadMatch(net.way(d), wp.road))) return;
+    if (wp.kind === 'roundabout' && !ds.some((d) => net.rb(d))) return;
+    if (wp.kind === 'junction' && (net.deg[i] < 3 || ds.some((d) => OSM.isFast(net.way(d))))) return;
+    const d = Math.hypot(N.x - x, N.y - y); if (d < bd) { bd = d; best = i; }
+  });
+  return best;
+}
+
 /** Convert an Overpass JSON response to level data. cfg is tools/farsta.config.json. */
 export function convert(osm, cfg, opts = {}) {
   const log = opts.log || (() => {});
@@ -98,7 +130,8 @@ export function convert(osm, cfg, opts = {}) {
     const reversed = o === '-1' || o === 'reverse';
     let ln = parseInt(t.lanes, 10); if (!(ln > 0)) ln = rb ? 1 : defaultLanes(hw, ow);
     let width = parseFloat(t.width); if (!(width > 2)) width = rb ? Math.max(5.5, ln * 4.5) : Math.max(ow ? 3.5 : 5, ln * laneWidth(hw));
-    W.push({ id: w.id, nds, reversed, way: { n: t.name || '', ref: t.ref || '', hw, ln, w: r1(width), ms: parseSpeed(t.maxspeed), ow, rb: rb ? 1 : 0 } });
+    const ds = (t.destination || t['destination:forward'] || '').split(';').filter(Boolean).join(', ');
+    W.push({ id: w.id, nds, reversed, way: { n: t.name || '', ref: t.ref || '', hw, ln, w: r1(width), ms: parseSpeed(t.maxspeed), ow, rb: rb ? 1 : 0, ...(ds ? { ds } : {}) } });
   }
 
   // graph nodes: way ends and nodes shared by several ways (or used twice by one)
@@ -277,13 +310,19 @@ export function convert(osm, cfg, opts = {}) {
   if (net3.startOptions(0, 0).length) {
     const rnd = OSM.rng(opts.seed || 20240501);
     const [minLen, maxLen] = opts.routeLength || cfg.routeLength || [2500, 6000];
-    const fmt = (s) => [s.rb && `${s.rb} roundabout${s.rb > 1 ? 's' : ''}`, s.sig && `${s.sig} set${s.sig > 1 ? 's' : ''} of lights`, s.right && `${s.right} unmarked junction${s.right > 1 ? 's' : ''}`, s.zebra && `${s.zebra} zebra crossing${s.zebra > 1 ? 's' : ''}`, s.bus && `${s.bus} bus stop${s.bus > 1 ? 's' : ''}`].filter(Boolean).join(', ');
+    const fmt = (s) => [s.mw && `${s.mw} motorway exit${s.mw > 1 ? 's' : ''}`, s.rb && `${s.rb} roundabout${s.rb > 1 ? 's' : ''}`, s.sig && `${s.sig} set${s.sig > 1 ? 's' : ''} of lights`, s.right && `${s.right} unmarked junction${s.right > 1 ? 's' : ''}`, s.zebra && `${s.zebra} zebra crossing${s.zebra > 1 ? 's' : ''}`, s.bus && `${s.bus} bus stop${s.bus > 1 ? 's' : ''}`].filter(Boolean).join(', ');
     for (const r of cfg.routes || []) {
-      const wps = r.via.map(([la, lo]) => pj.fwd(la, lo));
-      const rt = net3.routeWaypoints(wps, 60);
-      if (!rt) { log(`Warning: route "${r.name}" could not be snapped to the network, skipped.`); continue; }
+      const nodes = r.via.map((wp) => resolveWaypoint(net3, wp, pj));
+      const bad = nodes.findIndex((n) => n < 0);
+      if (bad >= 0) { log(`Warning: route "${r.name}": waypoint ${bad + 1} (${JSON.stringify(r.via[bad])}) matched nothing in the map data, route skipped.`); continue; }
+      let rt = null;
+      for (const o of net3.startOptions(0, 0)) {
+        const de = net3.routeVia(o.de, nodes.concat([net3.from(o.de)]));
+        if (de && (!rt || net3.stats(de, o.s).len < net3.stats(rt.de, rt.s0).len)) rt = { de, s0: o.s };
+      }
+      if (!rt) { log(`Warning: route "${r.name}" could not be routed through its waypoints, skipped.`); continue; }
       const s = net3.stats(rt.de, rt.s0);
-      routes.push({ id: 'c' + routes.length, name: r.name, desc: [`${(s.len / 1000).toFixed(1)} km`, fmt(s)].filter(Boolean).join(', '), len: Math.round(s.len), de: rt.de, s0: r1(rt.s0) });
+      routes.push({ id: 'c' + routes.length, name: r.name, desc: [`${(s.len / 1000).toFixed(1)} km`, fmt(s)].filter(Boolean).join(', '), len: Math.round(s.len), de: rt.de, s0: r1(rt.s0), ...(r.note ? { note: r.note } : {}) });
     }
     const themes = [
       { name: 'Route A: mixed town driving', w: { rb: 3, sig: 3, right: 3, yield: 2, zebra: 1, bus: 1, turn: 1 } },

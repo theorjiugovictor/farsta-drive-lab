@@ -138,6 +138,16 @@ NP.nearest=function(x,y,maxD,filter){
   if(best) best.d=Math.sqrt(bd);
   return best;
 };
+/* is (x, y) on any road surface (within half the width plus margin)? Several roads overlap at merges and junctions. */
+NP.onRoad=function(x,y,margin){
+  const l=this.grid.get(Math.floor(x/this.G)+','+Math.floor(y/this.G)); if(!l) return false;
+  for(const id of l){
+    const e=this.E[Math.floor(id/4096)], k=id%4096, [ax,ay]=e.pts[k],[bx,by]=e.pts[k+1], dx=bx-ax, dy=by-ay, L2=dx*dx+dy*dy;
+    let t=L2?((x-ax)*dx+(y-ay)*dy)/L2:0; t=Math.max(0,Math.min(1,t));
+    if(Math.hypot(x-ax-dx*t,y-ay-dy*t)<e.half+margin) return true;
+  }
+  return false;
+};
 /* edges near a point (by bounding box) */
 NP.edgesNear=function(x,y,R){ const out=[]; for(const e of this.E){ const b=e.bb; if(b[2]<x-R||b[0]>x+R||b[3]<y-R||b[1]>y+R) continue; out.push(e); } return out; };
 /* nearest directed edge that a car at (x,y) heading h could be driving on: {de, s along de, d} */
@@ -234,11 +244,19 @@ NP.pathPoints=function(des,s0){
     for(let j=0;j<P.length-1;j++){
       const [x0,y0]=P[j],[x1,y1]=P[j+1], L=Math.hypot(x1-x0,y1-y0); if(L<1e-6) continue;
       const n=Math.max(1,Math.ceil(L/2));
-      for(let q=0;q<n;q++) raw.push({x:x0+(x1-x0)*q/n,y:y0+(y1-y0)*q/n,off,w:e.wi,rb});
+      for(let q=0;q<n;q++) raw.push({x:x0+(x1-x0)*q/n,y:y0+(y1-y0)*q/n,off,w:e.wi,rb,k});
     }
     ends.push(raw.length);
-    if(k===des.length-1){ const l=P[P.length-1]; raw.push({x:l[0],y:l[1],off,w:e.wi,rb}); ends[k]=raw.length-1; }
+    if(k===des.length-1){ const l=P[P.length-1]; raw.push({x:l[0],y:l[1],off,w:e.wi,rb,k}); ends[k]=raw.length-1; }
   });
+  // Slip roads join a motorway at its centreline in OSM. Keep the path on the slip road, then move into the
+  // right lane over 80 m after joining, and back over the last 80 m before an exit, so it stays on the road.
+  const RAMP=80, cum=[0]; for(let i=1;i<raw.length;i++) cum.push(cum[i-1]+Math.hypot(raw[i].x-raw[i-1].x,raw[i].y-raw[i-1].y));
+  for(let k=0;k<des.length-1;k++){
+    const a=this.way(des[k]), b=this.way(des[k+1]), node=ends[k]; if(node==null||node>=raw.length) continue;
+    if(isLink(a)&&isFast(b)) for(let i=node;i<raw.length&&cum[i]-cum[node]<RAMP;i++) raw[i].off*=(cum[i]-cum[node])/RAMP;
+    if(isFast(a)&&isLink(b)) for(let i=node;i>=0&&cum[node]-cum[i]<RAMP;i--) if(raw[i].k===k) raw[i].off*=(cum[node]-cum[i])/RAMP;
+  }
   // trim the first s0 metres
   let start=0;
   if(s0>0){ let acc=0; for(let i=1;i<raw.length;i++){ acc+=Math.hypot(raw[i].x-raw[i-1].x,raw[i].y-raw[i-1].y); if(acc>=s0){ start=i; break; } start=i; } }
@@ -258,6 +276,16 @@ NP.pathPoints=function(des,s0){
     acc=0; while(i1<n-1&&acc<R){ acc+=Math.hypot(cur[i1+1].x-cur[i1].x,cur[i1+1].y-cur[i1].y); i1++; }
     const A=cur[i0],C={x:cur[ci].x,y:cur[ci].y},B=cur[i1],m=i1-i0;
     for(let i=i0+1;i<i1;i++){ const t=(i-i0)/m,u=1-t; cur[i]={x:u*u*A.x+2*u*t*C.x+t*t*B.x,y:u*u*A.y+2*u*t*C.y+t*t*B.y,w:cur[i].w,rb:cur[i].rb}; }
+  }
+  // round any bend left tighter than about 6 m radius (sharp corners inside a way, for example on service roads)
+  for(let pass=0;pass<6;pass++){
+    const tight=new Uint8Array(n);
+    for(let i=2;i<n-2;i++){ if(cur[i].rb) continue; const a=cur[i-2],b=cur[i],c=cur[i+2];
+      const t=Math.abs(angDiff(hdg(c.x-b.x,c.y-b.y),hdg(b.x-a.x,b.y-a.y))), L=Math.hypot(b.x-a.x,b.y-a.y)+Math.hypot(c.x-b.x,c.y-b.y);
+      if(L>0&&t/(L/2)>1/6) for(let j=Math.max(1,i-3);j<=Math.min(n-2,i+3);j++) tight[j]=1; }
+    if(!tight.some(Boolean)) break;
+    const prev=cur.map(p=>({x:p.x,y:p.y}));
+    for(let i=1;i<n-1;i++) if(tight[i]){ let x=0,y=0,c=0; for(let j=Math.max(0,i-2);j<=Math.min(n-1,i+2);j++){x+=prev[j].x;y+=prev[j].y;c++;} cur[i]={...cur[i],x:x/c,y:y/c}; }
   }
   // then one light pass to take out small kinks (roundabout entries and exits, offset changes)
   const sm=cur.map((p,i)=>{ if(i===0||i===n-1) return p; const a=cur[i-1],b=cur[i+1]; return {x:(a.x+2*p.x+b.x)/4,y:(a.y+2*p.y+b.y)/4,w:p.w,rb:p.rb}; });
@@ -337,7 +365,9 @@ NP.events=function(des,s0,ends){
         push({t:'node',m:'merge',node:n,x:N.x,y:N.y,s:sEnd,k,dir:'merge',angle:angDiff(this.hOut(nx),this.hIn(de)),ctrl:'merge',name:fw.n||(fw.ref?'road '+fw.ref:'')},k);
       } else if(!this.rb(de)&&!this.rb(nx)&&this.deg[n]>=3){
         const d=angDiff(this.hOut(nx),this.hIn(de)), dir=Math.abs(d)>2.6?'back':d>0.55?'right':d<-0.55?'left':'straight';
-        const ctrl=this.control(de,n);
+        let ctrl=this.control(de,n);
+        // högerregeln only matters if a road actually joins from the right
+        if(ctrl==='right'&&!this.inc[n].some(d=>{ if((d>>1)===(de>>1)||this.rb(d)||tier(this.way(d).hw)<1) return false; const a=angDiff(this.hIn(d),this.hIn(de)); return a>-2.4&&a<-0.7; })) ctrl='major';
         if(dir!=='straight'||['signals','right','yield','give_way','stop'].includes(ctrl)){
           const w2=this.way(nx), nm=(w2.n&&w2.n!==e.way.n)?w2.n:'';
           push({t:'node',m:'turn',node:n,x:N.x,y:N.y,s:sEnd,k,dir,angle:d,ctrl,name:nm,oneLane:!e.way.ow&&e.way.ln<=2,assumed:ctrl==='yield'&&!this.signOn(de,n)},k);
@@ -390,7 +420,8 @@ NP.generateRoute=function(startDe,s0,w,rnd,opts){
     const a=cand[Math.floor(rnd()*cand.length)], b=cand[Math.floor(rnd()*cand.length)]; if(a===b) continue;
     const de=this.routeVia(startDe,[a,b,home]); if(!de) continue;
     const st=this.stats(de,s0); if(st.len<minL||st.len>maxL) continue;
-    let sc=(w.rb||0)*st.rb+(w.sig||0)*st.sig+(w.right||0)*st.right+(w.yield||0)*st.yield+(w.zebra||0)*st.zebra+(w.bus||0)*st.bus+(w.turn||0)*(st.left+st.rightTurn);
+    const m=v=>Math.min(v,4);   // a few of each counts; twenty of one kind does not make a better route
+    let sc=(w.rb||0)*m(st.rb)+(w.sig||0)*m(st.sig)+(w.right||0)*m(st.right)+(w.yield||0)*m(st.yield)+(w.zebra||0)*m(st.zebra)+(w.bus||0)*m(st.bus)+(w.turn||0)*m(st.left+st.rightTurn);
     sc+=5*[st.rb,st.sig,st.right,st.zebra,st.bus].filter(x=>x>0).length;
     sc-=3*st.repeat+40*st.back;
     if(opts.avoid&&opts.avoid.size){ const sh=de.filter(d=>opts.avoid.has(d>>1)).length/de.length; sc-=20*sh+(sh>0.85?60:0); }

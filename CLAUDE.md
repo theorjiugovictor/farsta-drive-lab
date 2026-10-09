@@ -19,10 +19,10 @@ Everything lives in one IIFE. Main parts, in file order:
 3. **Path utilities**: `buildPath` (Catmull-Rom through control points), `polyline`, `reversePath`, `at(path, s)` gives position, tangent and curvature at arc length `s`, and `project(path, x, y)` returns `{s, lat}`. Coordinates are metres. World x is east/right, world y is down/south (canvas convention). Heading `h` is 0 when facing negative y and increases clockwise. Forward vector: `(sin h, -cos h)`.
 4. **State `S`**: the player car `S.car`, AI vehicles `S.ai`, pedestrians `S.peds`, faults, timers, view, mode.
 5. **`fault(cat, text, sev, key, tip)`**: records a fault. `sev` is `minor`, `serious` or `intervention`. `key` dedupes repeated faults. An intervention makes the examiner brake and ends the drive.
-6. **Physics**: `stepCar` is a kinematic bicycle model with speed-dependent steering limits. `act()` handles signals, mirror and shoulder checks, and hold speed. `mirrorAgo`, `lookLAgo` and `lookRAgo` are the seconds since the last check, and scoring reads them.
+6. **Physics**: `stepCar` is a kinematic bicycle model about the rear axle (1.35 m behind the car's centre, wheelbase 2.7 m) with speed-dependent steering limits. `c.v` is signed: negative when reversing. `c.gear` is `D` or `R`, changed with `setGear` only when stopped (`c.gearChanges` counts changes, for corrections). Steering input is either a fraction of full lock (`st`, keys and sticks) or a road-wheel angle (`S.gp.wheel`, from the VR wheel); `STEER_RATIO` is 15. `act()` handles signals, mirror, shoulder and look-back checks, gear and hold speed. `mirrorAgo`, `lookLAgo`, `lookRAgo` and `lookBAgo` are the seconds since the last check, and scoring reads them.
 7. **AI**: `mkVeh` creates a vehicle that follows a path at arc length `s` with lateral offset `lat`. `updateAI` does car following, optional `hold` (stop at a point while a condition is true) and an optional per-vehicle `script`.
 8. **Generic checks**: `genericChecks` covers speed limits and harsh braking. `laneChangeCheck` covers signal, mirrors, shoulder check and blind-spot occupancy.
-9. **Levels**: `RB` (roundabout), `HW` (motorway exit), `CR` (country road), `OSM` (Farsta, real roads, see below), registered in `LEVELS`. The level interface:
+9. **Levels**: `RB` (roundabout), `HW` (motorway exit), `CR` (country road), `PK` (parking and reversing), `OSM` (Farsta, real roads, see below), registered in `LEVELS`. `PK` has three exercises (`parallel`, `bay`, `corner`), each with an `onRoad(x, y)` surface test used for kerb contact (`wheelsOf` gives the tyre points), a `target` pose and an `evaluate()` for the final position. Parked cars are `parkedCar()` AI vehicles: always visible, and touching one is an intervention. The level interface:
    - `init(opts)`: build paths, spawn the player and AI, set `signs`, `hints`, `S.instr`
    - `step(dt)`: scenario-specific scoring, calls `finish()` at the end
    - `draw(g)`: draws the ground (roads, markings) in world metres on a 2D canvas. The 3D view reuses this as the ground texture, so anything drawn here shows up in every view.
@@ -32,10 +32,10 @@ Everything lives in one IIFE. Main parts, in file order:
    - optional: `subtitle()` (shown in the report, e.g. the route name), `trees` (3D trees), `build3D(group)` (extra 3D scenery), `sync3D()` (per-frame 3D updates), `drawDyn(g)` (per-frame 2D overlay that must not go into the cached ground texture)
 10. **2D renderer** (Map view): `render`, `drawVeh`, `drawSign` and `drawSignFace`.
 11. **3D renderer** (Driver and Chase views, three.js): `init3D`, `build3D` (per-level scenery: trees as InstancedMesh, houses, signs as sprites), `vehMesh`, `syncDyn` (keeps meshes in step with `S.ai` and `S.peds`), `updateGroundTex` (redraws `level.draw` into a 2048 px texture covering 280 m around a point ahead of the car), `render3D` (desktop mirrors use scissor viewports and a horizontally flipped projection, which is why scene materials are DoubleSide).
-12. **VR**: `buildCockpit` (dashboard, pillars, steering wheel, mirror planes using render targets, dashboard display panel), `pollXR` (Quest controller mapping), `renderXR` (rig follows the car, mirror render targets every other frame, head-gaze detection for mirror and shoulder checks), `enterVR`, `recenterXR`. The frame loop runs through `renderer.setAnimationLoop(frame)`.
+12. **VR**: `buildCockpit` (dashboard, pillars, steering wheel, mirror planes using render targets, dashboard display panel), `pollXR` (Quest controller mapping: grips hold the wheel when on the rim and signal otherwise, left stick steers and is the indicator stalk, right stick selects D and R), `wheelStep` (pure: hands in the wheel's frame to a wheel angle, hand over hand, self-centring), controller grips with gloves added to the rig in `init3D`, `renderXR` (rig follows the car, mirror render targets every other frame, head-gaze detection for mirror and shoulder checks), `enterVR`, `recenterXR`. The frame loop runs through `renderer.setAnimationLoop(frame)`.
 13. **Report**: `finish()` builds the Trafikverket-style report and saves the drive to progress.
 14. **Quiz** (`QUIZ` array with inline SVG diagrams), **video drills** (`V`), **progress** (`renderProgress`).
-15. **Test hook**: with `?test` in the address, `window.FDL_TEST` exposes `auto(on, timeScale, traffic)` (an autopilot that follows the Farsta route, gives way, stops at red and signals; `traffic` false clears AI traffic), `state()` and `near()` (vehicles around the player, for debugging). The smoke test uses it.
+15. **Test hook**: with `?test` in the address, `window.FDL_TEST` exposes `auto(on, timeScale, traffic)` (an autopilot that follows the Farsta route, gives way, stops at red and signals; `traffic` false clears AI traffic), `drive(gp)` (analogue input, `null` to stop), `act(a)`, `solve()` (puts the car on a parking exercise's target), `wheel()` (runs `wheelStep` with simulated hands), `state()` and `near()` (vehicles around the player, for debugging). The smoke test uses it.
 
 ## Farsta level (OpenStreetMap)
 
@@ -52,11 +52,13 @@ Custom routes in the config: waypoints are resolved by `resolveWaypoint` in `too
 
 ## Farsta roads: status and next steps
 
-Done: the pipeline, the `OSM` level, the Farsta card with a route picker, attribution, unit tests and the smoke test (see above). It was built and tested against the synthetic network in `tests/fixtures/mini.osm.json`, because the build environment could not reach Overpass.
+Done: the pipeline, the `OSM` level, the Farsta card with a route picker, attribution, unit tests and the smoke test (see above). The real map data is in `data/` (the user ran `npm run osm`; the cloud build environment cannot reach Overpass). The test centre is found by its address. After `npm run osm:build`, all seven routes build: the four exam-style ones (Huddinge exit and Lissmavägen, Vega, Norrby, towards Stockholm, 12 to 17 km) and three generated loops of 5 to 6 km. The test autopilot drives them on the real data (see `FDL_TEST.auto`), which is the quickest way to find geometry problems: run it without traffic and look for "Left the road" or serious faults.
+
+Lessons from the real data: slip roads join the motorway centreline in OSM, so `pathPoints` moves into the right lane over 80 m after joining and back over 80 m before an exit; off-road checks use `Net.onRoad` (any road surface under the car), not only the nearest edge; högerregeln (`ctrl` right) only applies when a road actually joins from the right.
 
 Next:
-1. Run `npm run osm` where Overpass is reachable, commit `data/`, and drive the generated routes. Check the warnings it prints (test centre address found, routes generated) and look at the screenshots. Real data will show things the fixture does not: dual carriageways, slip roads, multi-lane roundabouts, signal nodes far from the junction node, missing names.
-2. Check the four exam-style routes in `tools/farsta.config.json` on the real data (they come from the user and from students' accounts on korkortonline.se; the waypoint positions are approximate). Ask the user about more, for example Fagersjö's level crossing, Skarpnäck and old Enskede, which students also mention.
+1. Drive the routes yourself in all views and check the directions against the real signs. The waypoint positions for the exam routes were placed from the real data, but the route between them is the shortest one.
+2. Ask the user about more routes, for example Fagersjö's level crossing, Skarpnäck and old Enskede, which students also mention.
 3. Turn restrictions (`restriction` relations) in routing, and `turn:lanes` for lane choice and lane-position scoring on multi-lane roads (currently not scored there).
 4. Multi-lane roundabouts: lane choice by exit.
 5. Left turns at lights: give way to oncoming traffic.
@@ -72,6 +74,7 @@ Things to get right for Swedish rules:
 ## Other ideas
 
 - Make the hint and fault text available in Swedish as well.
-- Hands-on-wheel steering in VR (grab the 3D wheel with both controllers).
+- VR wheel: feel resistance with stronger haptics at speed, and show hand models instead of gloves.
+- Parking: pedestrians walking in the car park, and reversing out of a bay.
 - Night and rain variants, since visibility is part of "adjust speed to the circumstances".
 - Import YouTube dashcam clips in video drills when hosted outside the claude.ai sandbox (the IFrame Player API works on GitHub Pages).

@@ -65,6 +65,8 @@ select,input[type=text],textarea{font:inherit;color:var(--ink);background:var(--
 .speedo b{font:700 34px/1 var(--mono);font-variant-numeric:tabular-nums;min-width:2.4ch;text-align:right}
 .speedo span{font-size:12px;opacity:.75}
 .speedo .cr{font-size:11px;font-weight:700;background:var(--mw);padding:1px 6px;border-radius:4px;opacity:1}
+.speedo .gear{font:700 13px/1 var(--mono);padding:2px 6px;border-radius:4px;background:rgba(255,255,255,.12);opacity:1}
+.speedo .gear.rev{background:#fff;color:#111}
 .checks{position:absolute;right:12px;bottom:12px;display:flex;gap:6px;align-items:center}
 .attrib{position:absolute;left:50%;transform:translateX(-50%);bottom:2px;font-size:10px;line-height:1.3;padding:1px 6px;border-radius:4px;background:rgba(255,255,255,.72);color:#222;white-space:nowrap;z-index:2}
 .attrib a{color:inherit}
@@ -83,7 +85,7 @@ select,input[type=text],textarea{font:inherit;color:var(--ink);background:var(--
 .btn:disabled{opacity:.45;cursor:default}
 .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
 .overlay .btn.ghost{color:#fff;border-color:rgba(255,255,255,.4)}
-.pad{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;user-select:none;-webkit-user-select:none}
+.pad{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;user-select:none;-webkit-user-select:none}
 .pad button{background:var(--surface);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:12px 4px;font-weight:700;font-size:13px;cursor:pointer;touch-action:none}
 .pad button.held{background:var(--surface-2)}
 .pad .gas{background:#1d7f46;color:#fff;border-color:transparent}

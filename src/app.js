@@ -17,6 +17,8 @@ const CATS={
   rules:{en:'Apply the traffic rules',sv:'Trafikregler'}
 };
 const ORD=['','1st','2nd','3rd','4th','5th','6th','7th'];
+/* steering: wheel turns per road-wheel angle, cockpit wheel radius (m), wheel lock each way (rad, about 1.25 turns) */
+const STEER_RATIO=15, WHEEL_R=0.18, WHEEL_LOCK=7.8;
 const DIR=['','right','straight ahead','left'];
 const ASPH='#3b3e43', LINE='#eef0ee';
 const VCOL=['#6b7c93','#b8bec6','#2f3a48','#8e2b23','#d9d4c7','#46607a','#a3a89b','#5a4a3f'];
@@ -69,7 +71,7 @@ function project(path,x,y,hint){
 const cv=$('#cv'), g=cv.getContext('2d');
 const S={tab:'drive',lvlId:'roundabout',mode:'coach',keys:{},gpPrev:{},ai:[],peds:[],faults:[],faultKeys:new Set(),time:0,running:false,paused:false,ended:false,zoom:5,dpr:1,hint:'',hintT:-99,toast:null,instr:''};
 
-function mkCar(x,y,h,v){return {x,y,h,v,steer:0,len:4.5,wid:1.8,ind:0,indOn:0,hAtInd:0,mirrorAgo:99,lookLAgo:99,lookRAgo:99,acc:0,lastRight:-99,lastLeft:-99,cruise:0,player:true,color:'#f4c514'};}
+function mkCar(x,y,h,v){return {x,y,h,v,steer:0,len:4.5,wid:1.8,ind:0,indOn:0,hAtInd:0,mirrorAgo:99,lookLAgo:99,lookRAgo:99,lookBAgo:99,gear:'D',acc:0,lastRight:-99,lastLeft:-99,cruise:0,player:true,color:'#f4c514'};}
 function mkVeh(o){const v=Object.assign({s:0,v:0,vDes:10,len:4.5,wid:1.8,color:pick(VCOL),kind:'car',lat:0,acc:0,done:false,ind:0,hold:null,ignorePlayer:false,accel:2.2},o); pose(v); return v;}
 function pose(v){const q=at(v.path,v.s); v.x=q.x-q.ty*v.lat; v.y=q.y+q.tx*v.lat; v.h=Math.atan2(q.tx,-q.ty);}
 function rel(o){const c=S.car,fx=Math.sin(c.h),fy=-Math.cos(c.h),dx=o.x-c.x,dy=o.y-c.y; return {f:dx*fx+dy*fy,l:-dx*fy+dy*fx};}
@@ -87,33 +89,47 @@ function showToast(text,sev){S.toast={text,sev,t:S.time};}
 /* ---------- physics ---------- */
 function stepCar(dt){
   const c=S.car,k=S.keys;
-  if(S.intervened){ c.v=Math.max(0,c.v-9*dt); c.acc=-9; c.x+=Math.sin(c.h)*c.v*dt; c.y-=Math.cos(c.h)*c.v*dt; if(c.v===0){S.intervT+=dt; if(S.intervT>1.2) finish();} return; }
+  if(S.intervened){ const u=Math.max(0,Math.abs(c.v)-9*dt); c.v=Math.sign(c.v)*u; c.acc=-9; c.x+=Math.sin(c.h)*c.v*dt; c.y-=Math.cos(c.h)*c.v*dt; if(u===0){S.intervT+=dt; if(S.intervT>1.2) finish();} return; }
   let thr=k.up?1:0, brk=k.down?1:0, st=(k.right?1:0)-(k.left?1:0);
-  const gp=S.gp; if(gp){ thr=Math.max(thr,gp.thr); brk=Math.max(brk,gp.brk); if(Math.abs(gp.st)>0.08) st=gp.st; }
+  const gp=S.gp; let wheel=null;
+  if(gp){ thr=Math.max(thr,gp.thr); brk=Math.max(brk,gp.brk); if(gp.wheel!=null) wheel=gp.wheel; else if(Math.abs(gp.st)>0.08) st=gp.st; }
   if(brk>0.1) c.cruise=0;
-  const maxSt=0.62/(1+c.v*0.22);
-  const target=clamp(st,-1,1)*maxSt, rate=st===0?2.6:1.6;
+  // c.v is signed: negative when reversing. u is the speed.
+  const R=c.gear==='R', u0=Math.abs(c.v), maxSt=0.62/(1+u0*0.22);
+  // a steering wheel (VR hands or a gamepad wheel) sets the road-wheel angle directly; keys and sticks set a fraction of full lock
+  const target=wheel!=null?clamp(wheel,-maxSt,maxSt):clamp(st,-1,1)*maxSt, rate=wheel!=null?3.2:st===0?2.6:1.6;
   c.steer+=clamp(target-c.steer,-rate*dt,rate*dt);
   if(Math.abs(c.steer)>maxSt) c.steer=Math.sign(c.steer)*maxSt;
-  let a=thr*3.4*(1-c.v/50)-brk*8-0.01*c.v-0.0006*c.v*c.v;
-  if(!thr&&!brk){ if(c.cruise>0) a=clamp((c.cruise-c.v)*1.5,-1.5,1.5); else a-=0.35; }
-  if(thr>0.1&&c.cruise>0) c.cruise=Math.max(c.cruise,c.v);
-  const pv=c.v; c.v=Math.max(0,c.v+a*dt);
-  c.acc=c.acc*0.85+((c.v-pv)/dt)*0.15;
+  let a=R?thr*1.8*(1-u0/3.2)-brk*8-0.05*u0:thr*3.4*(1-u0/50)-brk*8-0.01*u0-0.0006*u0*u0;
+  if(!thr&&!brk){ if(c.cruise>0&&!R) a=clamp((c.cruise-u0)*1.5,-1.5,1.5); else a-=0.35; }
+  if(thr>0.1&&c.cruise>0) c.cruise=Math.max(c.cruise,u0);
+  const u=Math.max(0,u0+a*dt); c.v=R?-u:u;
+  c.acc=c.acc*0.85+((u-u0)/dt)*0.15;
+  // bicycle model about the rear axle (1.35 m behind the centre): the car pivots round its rear wheels,
+  // so the front swings out when you reverse round a corner, like a real car
+  const rx=c.x-Math.sin(c.h)*1.35, ry=c.y+Math.cos(c.h)*1.35;
   c.h+=c.v/2.7*Math.tan(c.steer)*dt;
-  c.x+=Math.sin(c.h)*c.v*dt; c.y-=Math.cos(c.h)*c.v*dt;
+  const nx=rx+Math.sin(c.h)*c.v*dt, ny=ry-Math.cos(c.h)*c.v*dt;
+  c.x=nx+Math.sin(c.h)*1.35; c.y=ny-Math.cos(c.h)*1.35;
   if(c.ind){
     c.indOn+=dt; if(c.ind===1)c.lastRight=S.time; else c.lastLeft=S.time;
     if(Math.abs(angDiff(c.h,c.hAtInd))>0.9&&Math.abs(c.steer)<0.03) c.ind=0;
     else if(c.indOn>16) fault('interact','Indicator left on long after the manoeuvre','minor','indOn','Cancel the signal once the lane change is done, or others will think you are about to turn.');
   }
-  c.mirrorAgo+=dt; c.lookLAgo+=dt; c.lookRAgo+=dt;
-  if(k.h_mirror)c.mirrorAgo=0; if(k.h_lookL)c.lookLAgo=0; if(k.h_lookR)c.lookRAgo=0;
+  c.mirrorAgo+=dt; c.lookLAgo+=dt; c.lookRAgo+=dt; c.lookBAgo+=dt;
+  if(k.h_mirror)c.mirrorAgo=0; if(k.h_lookL)c.lookLAgo=0; if(k.h_lookR)c.lookRAgo=0; if(k.h_lookB)c.lookBAgo=0;
 }
 function toggleInd(d){const c=S.car; if(!c)return; if(c.ind===d)c.ind=0; else {c.ind=d;c.indOn=0;c.hAtInd=c.h;}}
+/* gear selector: D or R, only when (almost) stopped, like an automatic */
+function setGear(g){
+  const c=S.car; if(!c||c.gear===g) return;
+  if(Math.abs(c.v)>0.4){ showToast('Stop before you change between D and R','minor'); return; }
+  c.gear=g; c.v=0; c.cruise=0; c.gearChanges=(c.gearChanges||0)+1;
+}
 function act(a){
   const c=S.car; if(!c)return;
-  if(a==='mirror')c.mirrorAgo=0; else if(a==='lookL')c.lookLAgo=0; else if(a==='lookR')c.lookRAgo=0;
+  if(a==='mirror')c.mirrorAgo=0; else if(a==='lookL')c.lookLAgo=0; else if(a==='lookR')c.lookRAgo=0; else if(a==='lookB')c.lookBAgo=0;
+  else if(a==='gear')setGear(c.gear==='R'?'D':'R');
   else if(a==='sigL')toggleInd(-1); else if(a==='sigR')toggleInd(1);
   else if(a==='cruise')c.cruise=c.cruise>0?0:c.v;
 }
@@ -150,7 +166,7 @@ function circles(o){const fx=Math.sin(o.h),fy=-Math.cos(o.h),n=Math.max(2,Math.r
 function minDist(a,b){let m=1e9; for(const p of circles(a)) for(const q of circles(b)) m=Math.min(m,Math.hypot(p[0]-q[0],p[1]-q[1])-p[2]-q[2]); return m;}
 function collisions(){
   const c=S.car;
-  for(const v of S.ai){ if(v.done) continue; if(Math.abs(v.x-c.x)>20||Math.abs(v.y-c.y)>20) continue; if(minDist(c,v)<0.35){ fault('interact',v.kind==='bike'?'Came dangerously close to the cyclist':'Came dangerously close to another vehicle','intervention','col'); return; } }
+  for(const v of S.ai){ if(v.done) continue; if(Math.abs(v.x-c.x)>20||Math.abs(v.y-c.y)>20) continue; if(minDist(c,v)<(v.parked&&v.kind==='car'?0.03:0.35)){ fault('interact',v.kind==='bike'?'Came dangerously close to the cyclist':v.parked&&v.kind==='car'?'Hit a parked car':'Came dangerously close to another vehicle','intervention','col'); return; } }
   for(const p of S.peds){ if(p.state!=='cross') continue; if(Math.hypot(p.x-c.x,p.y-c.y)<2.4){ fault('interact','Came dangerously close to a pedestrian','intervention','pcol'); return; } }
 }
 
@@ -601,12 +617,13 @@ const OSM={
     const c=S.car, net=this.net, pr=project(this.path,c.x,c.y,this.hint); this.hint=pr.i;
     const s=pr.s, prev=this.prevS==null?s:this.prevS; this.ps=s;
     const nr=this.near=net.nearest(c.x,c.y,30);
-    if(!nr||nr.d>nr.half+1.8){ this.offT+=dt; if(this.offT>0.25){ fault('maneuver','Left the road','intervention','off'); return; } } else this.offT=0;
+    if(!net.onRoad(c.x,c.y,1.8)){ this.offT+=dt; if(this.offT>0.25){ fault('maneuver','Left the road','intervention','off'); return; } } else this.offT=0;
     if(nr&&nr.way.ow&&nr.d<nr.half&&c.v>1.5&&Math.cos(angDiff(c.h,nr.h))<-0.3){ this.wrongT+=dt; if(this.wrongT>1){ fault('rules','Drove against the direction of a one-way street','intervention','wrongway'); return; } } else this.wrongT=0;
     // lane changes on one-way roads with several lanes (motorway, ramps, big streets)
     if(nr&&nr.way.ow&&nr.way.ln>1&&!nr.way.rb&&nr.d<nr.half&&Math.cos(angDiff(c.h,nr.h))>0.8){
       const ln=nr.way.ln, f=(nr.lat+nr.way.w/2)/(nr.way.w/ln);
-      if(this.lane==null||this.laneEdge!==nr.e||nr.s<25||nr.s>nr.e.len-25) this.lane=clamp(Math.floor(f),0,ln-1);   // not scored near junctions
+      const nearRamp=this.nodes.some(e=>(e.m==='merge'||e.m==='exit')&&Math.abs(e.s-s)<110);   // joining and leaving have their own checks
+      if(this.lane==null||this.laneEdge!==nr.e||nr.s<25||nr.s>nr.e.len-25||nearRamp) this.lane=clamp(Math.floor(f),0,ln-1);   // not scored near junctions
       else if(f<this.lane-0.15&&this.lane>0){ laneChangeCheck(this.lane,this.lane-1); this.lane--; }
       else if(f>this.lane+1.15&&this.lane<ln-1){ laneChangeCheck(this.lane,this.lane+1); this.lane++; }
       this.laneEdge=nr.e;
@@ -914,7 +931,170 @@ const OSM={
       m.r.color.set(st==='R'?'#ff2a2a':'#3a1010'); m.y.color.set(st==='Y'?'#ffb000':'#3a2a08'); m.g.color.set(st==='G'?'#2aff6a':'#0c3018'); }
   }
 };
-const LEVELS={roundabout:RB,highway:HW,country:CR};
+/* ---------- Parking and reversing ----------
+   Three manoeuvres from the test: parallel parking (fickparkering), reversing into a bay, and reversing
+   around a corner. Each sets up its roads (an onRoad test, used for kerb contact) and a target pose.
+   Shared scoring: looking around before reversing, looking back while reversing, speed, kerb contact,
+   corrections and time. Parked cars are parked AI vehicles, so touching one is an intervention. */
+function parkedCar(x,y,h,color){
+  const fx=Math.sin(h),fy=-Math.cos(h);
+  return mkVeh({path:polyline([[x-fx,y-fy],[x+fx,y+fy]],0.5),s:1,v:0,vDes:0,parked:true,color:color||pick(VCOL)});
+}
+function wheelsOf(c,inset){ // tyre contact points, optionally moved inwards
+  const fx=Math.sin(c.h),fy=-Math.cos(c.h),rx=Math.cos(c.h),ry=Math.sin(c.h),a=c.len/2-0.8,b=c.wid/2-0.12-(inset||0);
+  return [[a,-b],[a,b],[-a,-b],[-a,b]].map(([f,r])=>[c.x+fx*f+rx*r,c.y+fy*f+ry*r]);
+}
+const PK={
+  id:'park',title:'Parking and reversing',ground:'#5b7150',
+  EX:{parallel:'Parallel parking',bay:'Reverse into a parking bay',corner:'Reverse around a corner'},
+  init(o){
+    this.ex=this.EX[o.park]?o.park:'parallel';
+    Object.assign(this,{t:0,doneT:0,noLookT:0,firstRev:true,offT:0,kerbOn:false,kerbHits:0,maxKerb:0,reversed:false,finished:false,carT:0,carSpawned:false});
+    S.ai=[]; S.peds=[];
+    this['setup_'+this.ex]();
+    this.signs=[{x:-5,y:20,type:'limit',val:30}];
+    S.instr=this.instrText();
+  },
+  subtitle(){ return this.EX[this.ex]; },
+  checkLimit(){ return 30; }, hudLimit(){ return {v:30}; }, zone(){ return 'park'; },
+  /* --- parallel parking: a gap of 7 m between parked cars on the right, kerb at x = 5.7 --- */
+  setup_parallel(){
+    S.car=mkCar(1.75,30,0,0);
+    for(const y of [-71,-65.5,-60,-48.5,-43,-37.5]) S.ai.push(parkedCar(4.6,y,0));
+    this.A=-60; this.B=-48.5; this.kerbX=5.7;
+    this.target={x:4.6,y:-54.25,h:0};
+    this.onRoad=(x,y)=>x>-3.5&&x<5.7&&y>-200&&y<80;
+    const c=()=>S.car;
+    this.hints=[
+      {when:()=>true,t:'Parallel park in the gap between the parked cars on your right. Signal right and stop alongside the car in front of the gap, about a metre out, rear bumpers level.'},
+      {when:()=>c().y<-56&&Math.abs(c().v)<0.3,t:'Select R (key R), look all round the car, then reverse slowly. When your rear wheels pass the other car\'s rear bumper, turn fully right.'},
+      {when:()=>c().v<-0.1&&Math.abs(angDiff(c().h,0))>0.5,t:'At about 45 degrees, straighten the wheels and keep reversing. Watch the front corner on your left: it swings out.'},
+      {when:()=>c().v<-0.1&&c().x>3.4&&Math.abs(angDiff(c().h,0))>0.25,t:'Front clear of the car in front? Turn fully left to swing the front in, and stop before the car behind.'},
+      {when:()=>this.inTarget(0.5),t:'Stop, select D and adjust so you are centred in the gap, parallel and close to the kerb.'}
+    ];
+  },
+  /* --- reverse into a bay: aisle along the car park, bays 2.5 m wide and 5 m deep on both sides --- */
+  setup_bay(){
+    S.car=mkCar(0,30,0,0);
+    const k=9, yb=-60+k*2.5; this.bay={x0:3,x1:8,y0:yb,y1:yb+2.5};
+    for(let i=0;i<20;i++){
+      const y=-60+i*2.5+1.25;
+      if(i!==k&&(Math.abs(i-k)===1||Math.random()<0.45)) S.ai.push(parkedCar(5.5,y,Math.random()<0.5?-Math.PI/2:Math.PI/2));
+      if(Math.random()<0.5) S.ai.push(parkedCar(-5.5,y,Math.random()<0.5?-Math.PI/2:Math.PI/2));
+    }
+    this.target={x:5.6,y:yb+1.25,h:-Math.PI/2};
+    this.onRoad=(x,y)=>(x>-8&&x<8&&y>-62&&y<-8)||(x>-3&&x<3&&y>-8.5&&y<80);
+    const c=()=>S.car;
+    this.hints=[
+      {when:()=>true,t:'Reverse into the yellow bay on your right. Drive slowly along the aisle and look out for people walking between the cars.'},
+      {when:()=>c().y<this.bay.y0+4,t:'Pass the bay, stop about one and a half car lengths beyond it, a little left of the middle of the aisle.'},
+      {when:()=>c().v<-0.1,t:'Reversing: turn fully right, look over your right shoulder and in both mirrors, and straighten as the car lines up with the bay.'},
+      {when:()=>this.inTarget(0.6),t:'Stop when you are straight and fully inside the lines.'}
+    ];
+  },
+  /* --- reverse around a corner: side road to the right at y = -50, kerb corners with a 6 m radius --- */
+  setup_corner(){
+    S.car=mkCar(1.75,20,0,0);
+    for(const y of [10,-95]) S.ai.push(parkedCar(-2.5,y,Math.PI));
+    this.cornerC={x:9.5,y:-59.5,r:6};
+    this.target={x:16,y:-52.2,h:-Math.PI/2};
+    const fil=(x,y,cx,cy)=>x>=3.5&&x<=cx&&Math.abs(y-cy)<=6&&(cy<-50?y>=cy:y<=cy)&&Math.hypot(x-cx,y-cy)>6;
+    this.onRoad=(x,y)=>(x>-3.5&&x<3.5&&y>-200&&y<80)||(x>=3.5&&x<90&&y>-53.5&&y<-46.5)||fil(x,y,9.5,-59.5)||fil(x,y,9.5,-40.5);
+    const c=()=>S.car;
+    this.hints=[
+      {when:()=>true,t:'Drive past the side road on your right and stop about a car length past the corner, close to the kerb.'},
+      {when:()=>c().y<-60&&Math.abs(c().v)<0.3,t:'Select R (key R), look all round, and reverse slowly along the kerb, about half a metre to a metre from it.'},
+      {when:()=>c().v<-0.1&&c().y>-62,t:'As your rear wheel reaches the start of the curve, steer right to follow the kerb at the same distance. Check left as well: the front swings out into the road.'},
+      {when:()=>c().v<-0.1&&c().x>9,t:'Straighten up and reverse a few car lengths into the side road, then stop.'}
+    ];
+  },
+  /* distance from a point to the corner exercise's kerb (main road east kerb, the curve, the side road's north kerb) */
+  kerbDist(x,y){
+    const C=this.cornerC;
+    if(y<=C.y) return Math.abs(x-3.5);
+    if(x>=C.x) return Math.abs(y-(C.y+C.r));
+    return Math.abs(Math.hypot(x-C.x,y-C.y)-C.r);
+  },
+  inTarget(tol){
+    const c=S.car,T=this.target;
+    if(this.ex==='parallel') return c.y>-56.3&&c.y<-52.2&&Math.abs(angDiff(c.h,0))<0.17&&c.x+c.wid/2>this.kerbX-0.6-(tol||0);
+    if(this.ex==='bay'){ const B=this.bay; return wheelsOf(c,-0.1-(tol||0)).every(([x,y])=>x>B.x0-0.15&&x<B.x1+0.15&&y>B.y0-0.15&&y<B.y1+0.15)&&(Math.abs(angDiff(c.h,T.h))<0.25||Math.abs(angDiff(c.h,-T.h))<0.25); }
+    return c.x>13.5-(tol||0)*4&&Math.abs(angDiff(c.h,-Math.PI/2))<0.25&&c.y>-53.5&&c.y<-46.5;
+  },
+  instrText(){ return {parallel:'Parallel park in the gap on your right',bay:'Reverse into the yellow bay on your right',corner:'Reverse around the corner into the side road on your right'}[this.ex]; },
+  step(dt){
+    const c=S.car; this.t+=dt;
+    // a car comes along the street while you manoeuvre
+    if(!this.carSpawned&&this.ex!=='bay'&&this.reversed){ this.carSpawned=true; S.ai.push(mkVeh({path:polyline([[1.75,90],[1.75,-200]],2),s:0,v:8,vDes:8})); }
+    // kerb: a tyre off the road surface touches the kerb, a tyre well past it is up on the pavement
+    const off=wheelsOf(c).some(([x,y])=>!this.onRoad(x,y));
+    if(off&&!this.kerbOn){ this.kerbHits++; fault('maneuver','Touched the kerb','minor','kerb'+this.kerbHits,'Go slower and look at where the wheel is heading. Stop and correct before the tyre touches.'); }
+    this.kerbOn=off;
+    if(off){ this.offT+=dt; if(this.offT>0.6&&wheelsOf(c,0.5).some(([x,y])=>!this.onRoad(x,y))) fault('maneuver','Drove up onto the pavement','serious','pave','Stop as soon as you feel the kerb, then correct forwards or backwards.'); } else this.offT=0;
+    if(Math.hypot(c.x,c.y+50)>230){ fault('maneuver','Left the exercise area','minor','away'); finish(); return; }
+    // reversing
+    if(c.v<-0.15){
+      this.reversed=true;
+      if(this.firstRev){
+        this.firstRev=false;
+        if(Math.min(c.lookBAgo,c.lookLAgo,c.lookRAgo)>4) fault('attention','Did not look around before reversing','minor','lookBefore','Before you reverse, look all round the car: over both shoulders and through the rear window.');
+        if(this.ex==='parallel'&&S.time-c.lastRight>10) fault('rules','No signal before pulling in to park','minor','psig','Signal right before you stop and reverse into the space, so traffic behind knows what you are doing.');
+      }
+      if(Math.min(c.lookBAgo,c.lookLAgo,c.lookRAgo)>2.5){ this.noLookT+=dt; if(this.noLookT>2) fault('attention','Reversed without looking back','minor','nolook','While reversing, look back through the rear window (hold S, or turn your head in VR) and check the sides. Mirrors alone are not enough.'); } else this.noLookT=0;
+      if(c.v<-2.4) fault('speed','Reversed too fast','minor','revfast','Reverse at walking pace so you can stop at once.');
+      if(this.ex==='corner'&&c.y>-70&&c.y<-40){ const fx=Math.sin(c.h),fy=-Math.cos(c.h),rx=Math.cos(c.h),ry=Math.sin(c.h),px=c.x-fx*1.45+rx*0.78,py=c.y-fy*1.45+ry*0.78; this.maxKerb=Math.max(this.maxKerb,this.kerbDist(px,py)); }
+    }
+    if(this.t>180&&!this.finished){ fault('maneuver','Took too long to complete the exercise','minor','slow','Plan the steps before you start, and correct calmly if it goes wrong.'); finish(); return; }
+    // done: stopped inside the target for 1.5 s
+    if(this.inTarget()&&Math.abs(c.v)<0.05){ this.doneT+=dt; if(this.doneT>1.5&&!this.finished){ this.finished=true; this.evaluate(); finish(); } } else this.doneT=0;
+  },
+  evaluate(){
+    const c=S.car, n=c.gearChanges||0;
+    if(this.ex==='parallel'){
+      const gap=this.kerbX-(c.x+c.wid/2), ang=Math.abs(angDiff(c.h,0)), front=(c.y-c.len/2)-(this.A+2.25), back=(this.B-2.25)-(c.y+c.len/2);
+      if(gap>0.35) fault('place',`Parked ${Math.round(gap*100)} cm from the kerb`,'minor','pgap','Aim for about 20 to 30 cm from the kerb.');
+      if(ang>0.09) fault('maneuver','Not parallel with the kerb','minor','pang','Finish with the car straight: use the last metre forwards or backwards to line up.');
+      if(Math.min(front,back)<0.4) fault('place',`Too close to the car ${front<back?'in front':'behind'}`,'minor','pends','Leave room for the other cars to get out. Centre yourself in the gap.');
+      if(n>5) fault('maneuver','Needed many corrections','minor','pcorr','A few corrections are fine. Many shows the plan was not clear: get the starting position right.');
+    } else if(this.ex==='bay'){
+      const B=this.bay, off=Math.abs(c.y-(B.y0+B.y1)/2), ang=Math.min(Math.abs(angDiff(c.h,-Math.PI/2)),Math.abs(angDiff(c.h,Math.PI/2)));
+      if(Math.abs(angDiff(c.h,Math.PI/2))<0.5) fault('maneuver','Drove in forwards; the task was to reverse in','minor','bfwd','Reversing in makes it safer to drive out, since you can see the aisle. Pass the bay and reverse in.');
+      if(off>0.35) fault('place','Not centred in the bay','minor','boff','Use the mirrors to check the lines on both sides as you finish.');
+      if(ang>0.1) fault('maneuver','Crooked in the bay','minor','bang','Straighten the wheels early so the car comes in parallel with the lines.');
+      if(n>4) fault('maneuver','Needed many corrections','minor','bcorr','Start from a good position: about one and a half car lengths past the bay.');
+    } else {
+      const gap=(c.y-c.wid/2)-(-53.5);
+      if(this.maxKerb>2.0) fault('place','Swung wide going round the corner','minor','cwide','Keep about half a metre to a metre from the kerb all the way round. Steer as the kerb curves, not before.');
+      if(gap>1.0) fault('place',`Ended ${gap.toFixed(1)} m from the kerb`,'minor','cgap','Finish close to the kerb, as if you were parked.');
+      if(n>4) fault('maneuver','Needed many corrections','minor','ccorr','Go slowly enough that you can steer as the kerb curves, without stopping to correct.');
+    }
+    if(!this.reversed) fault('maneuver','The exercise was not done in reverse','minor','norev');
+    showToast('Done. Well parked?','minor');
+  },
+  draw(g){
+    const pave='#8d918b';
+    g.fillStyle=pave; g.strokeStyle=LINE;
+    if(this.ex==='parallel'){
+      g.fillRect(-6.5,-200,13+2.3+0.5,280); g.fillStyle=ASPH; g.fillRect(-3.5,-200,9.2,280);
+      g.strokeStyle=LINE; g.lineWidth=0.15; g.setLineDash([3,9]); line(g,0,80,0,-200); g.setLineDash([1,2]); line(g,3.5,80,3.5,-200); g.setLineDash([]);
+    } else if(this.ex==='bay'){
+      g.fillRect(-11,-65,22,60); g.fillRect(-6,-8,12,90); g.fillStyle=ASPH; g.fillRect(-8,-62,16,54); g.fillRect(-3,-8.5,6,90);
+      g.lineWidth=0.12;
+      for(const sgn of [-1,1]){ for(let i=0;i<=20;i++){ const y=-60+i*2.5; line(g,sgn*3,y,sgn*8,y); } line(g,sgn*8,-60,sgn*8,-10); }
+      const B=this.bay; g.strokeStyle='#f4c514'; g.lineWidth=0.25; g.strokeRect(B.x0,B.y0,B.x1-B.x0,B.y1-B.y0); g.strokeStyle=LINE;
+    } else {
+      g.fillRect(-6.5,-200,13,280); g.fillRect(3.5,-56.5,90,13);
+      g.fillStyle=ASPH; g.fillRect(-3.5,-200,7,280); g.fillRect(3.5,-53.5,90,7);
+      for(const [cx,cy] of [[9.5,-59.5],[9.5,-40.5]]){
+        g.save(); g.beginPath(); g.rect(3.5,cy<-50?-59.5:-46.5,6,6); g.clip();
+        g.fillStyle=ASPH; g.fillRect(3.5,cy-6,6,12); g.fillStyle=pave; g.beginPath(); g.arc(cx,cy,6,0,TAU); g.fill(); g.fillStyle=this.ground; g.beginPath(); g.arc(cx,cy,3,0,TAU); g.fill(); g.restore();
+      }
+      g.fillStyle=this.ground; g.fillRect(6.5,-200,90,140.5); g.fillRect(6.5,-43.5,90,123.5);
+      g.lineWidth=0.15; g.setLineDash([3,9]); line(g,0,80,0,-200); g.setLineDash([]);
+    }
+  }
+};
+const LEVELS={roundabout:RB,highway:HW,country:CR,park:PK};
 if(FD&&OL&&FD.routes) LEVELS.farsta=OSM;
 
 function line(g,x0,y0,x1,y1){g.beginPath();g.moveTo(x0,y0);g.lineTo(x1,y1);g.stroke();}
@@ -941,8 +1121,10 @@ function laneChangeCheck(from,to){
 
 /* ---------- rendering ---------- */
 function visibility(o){
+  if(o.parked&&o.kind==='car') return 1;   // you know the parked cars are there
   const r=rel(o); if(r.f>-1.5) return 1; const c=S.car;
   if(c.mirrorAgo<1.5&&!(Math.abs(r.l)>1.4&&r.f>-10)) return 1;
+  if(c.lookBAgo<1.5) return 1;
   if(r.l<0&&c.lookLAgo<1.5&&r.f>-16) return 1;
   if(r.l>0&&c.lookRAgo<1.5&&r.f>-16) return 1;
   return S.mode==='coach'?0.28:0;
@@ -964,6 +1146,7 @@ function drawVeh(g,o,alpha){
     if(o.player){ g.strokeStyle='#111'; g.lineWidth=0.12; rr(g,-W/2,-L/2,W,L,0.5); g.stroke(); }
     const blink=Math.floor(S.time*3)%2===0;
     if(o.ind&&blink){ g.fillStyle='#ff9a1a'; const x=o.ind>0?W/2-0.35:-W/2; g.fillRect(x,-L/2,0.35,0.35); g.fillRect(x,L/2-0.35,0.35,0.35); }
+    if(o.player&&o.gear==='R'){ g.fillStyle='#ffffff'; g.fillRect(-W/2+0.65,L/2-0.18,0.35,0.18); g.fillRect(W/2-1.0,L/2-0.18,0.35,0.18); }
     if(o.acc<-1.2||(o.player&&S.keys.down)){ g.fillStyle='#ff2a2a'; g.fillRect(-W/2+0.1,L/2-0.18,0.5,0.18); g.fillRect(W/2-0.6,L/2-0.18,0.5,0.18); }
   }
   g.restore();
@@ -996,7 +1179,7 @@ function render(){
   const c=S.car,lv=S.level;
   g.setTransform(1,0,0,1,0,0);
   g.fillStyle=lv.ground; g.fillRect(0,0,W,H);
-  const target=(H*0.70)/(55+c.v*2.2);
+  const target=(H*0.70)/(55+Math.abs(c.v)*2.2);
   S.zoom+=(target-S.zoom)*(S.zoomInit?0.04:1); S.zoomInit=true;
   g.translate(W/2,H*0.72); g.rotate(-c.h); g.scale(S.zoom,S.zoom); g.translate(-c.x,-c.y);
   lv.draw(g);
@@ -1043,6 +1226,15 @@ function init3D(){
     V3.signMat=new Map();
     V3.posOff=new T.Vector3(); V3.yawOff=0; V3.prev={}; V3.frames=0; V3.hudT=0; V3.mirrorPlanes=[];
     r.xr.enabled=true;
+    // controller grips, for holding the steering wheel; a simple glove shows where each hand is
+    V3.wheel={ang:0,mode:false,h:{}}; V3.gripBy={};
+    for(let i=0;i<2;i++){
+      const gr=r.xr.getControllerGrip(i);
+      gr.addEventListener('connected',e=>{ const side=e.data&&e.data.handedness; gr.userData.side=side; if(side) V3.gripBy[side]=gr; });
+      gr.addEventListener('disconnected',()=>{ const side=gr.userData.side; if(side&&V3.gripBy[side]===gr) delete V3.gripBy[side]; });
+      const glove=new T.Mesh(BOXG,new T.MeshLambertMaterial({color:'#2a2e33'})); glove.scale.set(0.06,0.035,0.1); gr.add(glove); gr.userData.glove=glove;
+      V3.rig.add(gr);
+    }
     V3.ok=true; return true;
   }catch(e){ return false; }
 }
@@ -1115,6 +1307,7 @@ function vehMesh(v,player){
       for(const e of [-1,1]){ const b=box(0.2,0.11,0.07,s*(W/2-0.1),lightY+0.13,e*(L/2+0.02),ind); b.visible=false; (s<0?ud.indL:ud.indR).push(b); }
     }
     ud.brakeMat=brake;
+    if(player){ const rev=M('#ffffff',true); ud.rev=[-1,1].map(s=>box(W*0.12,0.1,0.05,s*W*0.12,lightY,L/2+0.02,rev)); ud.rev.forEach(b=>{b.visible=false;}); }
   }
   grp.userData=ud;
   if(player) buildCockpit(grp);
@@ -1144,6 +1337,7 @@ function syncDyn(){
     let m=V3.dyn.get(v); if(!m){ m=vehMesh(v,v===S.car); V3.dyn.set(v,m); V3.scene.add(m); }
     seen.add(v); const ud=m.userData;
     m.position.set(v.x,0,v.y); m.rotation.y=-v.h;
+    if(ud.rev){ const on=v.gear==='R'; ud.rev.forEach(b=>{b.visible=on;}); }
     if(ud.brakeMat){ const br=v.acc<-1.2||(v===S.car&&!!S.keys.down); if(br!==ud.br){ ud.br=br; ud.brakeMat.color.set(br?'#ff2a2a':'#5a0d0d'); } }
     ud.indL.forEach(b=>{b.visible=v.ind===-1&&blink;}); ud.indR.forEach(b=>{b.visible=v.ind===1&&blink;});
     const a=(S.view==='chase'&&v!==S.car)?visibility(v):1;
@@ -1166,7 +1360,7 @@ function render3D(dt){
   updateGroundTex(); syncDyn();
   const fx=Math.sin(c.h),fz=-Math.cos(c.h),rx=Math.cos(c.h),rz=Math.sin(c.h),cam=V3.cam;
   if(S.view==='driver'){
-    const tgt=c.lookLAgo<0.9?-1.7:c.lookRAgo<0.9?1.7:0;
+    const tgt=c.lookBAgo<0.9?2.7:c.lookLAgo<0.9?-1.7:c.lookRAgo<0.9?1.7:0;
     S.headYaw+=(tgt-S.headYaw)*Math.min(1,dt*9);
     S.pitch+=((-0.02+clamp(c.acc,-8,4)*0.005)-S.pitch)*Math.min(1,dt*5);
     cam.position.set(c.x+fx*0.05-rx*0.38,1.25,c.y+fz*0.05-rz*0.38);
@@ -1223,7 +1417,7 @@ function buildCockpit(grp){
   const s1=new T.Mesh(BOXG,lam('#15171a')); s1.scale.set(0.34,0.03,0.02); wm.add(s1);
   const s2=new T.Mesh(BOXG,lam('#15171a')); s2.scale.set(0.03,0.17,0.02); s2.position.y=-0.085; wm.add(s2);
   const mk=new T.Mesh(BOXG,lam('#f4c514')); mk.scale.set(0.03,0.025,0.035); mk.position.y=0.18; wm.add(mk);
-  wg.add(wm); ck.add(wg); V3.wheelMesh=wm;
+  wg.add(wm); ck.add(wg); V3.wheelMesh=wm; V3.wheelGroup=wg;
   V3.mirrorPlanes=[];
   [['rear',0.26,0.08,[0,1.5,-0.55]],['left',0.18,0.12,[-1.0,1.1,-0.6]],['right',0.18,0.12,[1.0,1.1,-0.6]]].forEach(([id,w,h,pp])=>{
     const m=new T.Mesh(new T.PlaneGeometry(w,h),new T.MeshBasicMaterial({map:V3.rt[id].texture}));
@@ -1246,8 +1440,8 @@ function drawVRHud(){
   g2.setTransform(1,0,0,1,0,0); g2.clearRect(0,0,512,256);
   g2.fillStyle='rgba(14,17,20,.92)'; rr(g2,0,0,512,256,22); g2.fill();
   g2.textAlign='left'; g2.textBaseline='alphabetic';
-  g2.fillStyle='#fff'; g2.font='700 80px "Overpass Mono", ui-monospace, monospace'; g2.fillText(String(Math.round(c.v*3.6)),24,94);
-  g2.fillStyle='#98a1a9'; g2.font='600 22px Overpass, system-ui, sans-serif'; g2.fillText(c.cruise>0?'km/h  HOLD':'km/h',26,122);
+  g2.fillStyle='#fff'; g2.font='700 80px "Overpass Mono", ui-monospace, monospace'; g2.fillText(String(Math.round(Math.abs(c.v)*3.6)),24,94);
+  g2.fillStyle='#98a1a9'; g2.font='600 22px Overpass, system-ui, sans-serif'; g2.fillText((c.cruise>0?'km/h  HOLD':'km/h')+'   '+c.gear,26,122);
   const blink=Math.floor(S.time*2.5)%2===0;
   g2.font='700 40px system-ui, sans-serif'; g2.fillStyle=c.ind===-1&&blink?'#ff9a1a':'#3a4047'; g2.fillText('◀',232,82); g2.fillStyle=c.ind===1&&blink?'#ff9a1a':'#3a4047'; g2.fillText('▶',300,82);
   g2.save(); g2.translate(452,64); drawSignFace(g2,{type:'limit',val:S.level.hudLimit().v},42,2.2); g2.restore();
@@ -1262,23 +1456,70 @@ function drawVRHud(){
   V3.hudTex.needsUpdate=true;
 }
 function xPress(){ if(S.ended){ $('#report').hidden=true; prepare(); startDrive(); } else if(!S.running) startDrive(); else { S.paused=!S.paused; showOverlay(S.paused?'paused':'hide'); } }
+/* Hands on the wheel. hands: [{id, grip, p:[x,y,z]}], p in the wheel's frame (rim in the x-y plane,
+   driver on +z). A hand grabs when its grip is pressed near the rim and turns the wheel by the change in
+   its angle round the hub; two hands average, so hand-over-hand works. Let go and the wheel centres itself,
+   faster at speed. Returns the wheel angle in radians, positive to the right. */
+function wheelStep(W,hands,speed,dt){
+  let sum=0,n=0;
+  for(const h of hands){
+    const st=W.h[h.id]||(W.h[h.id]={held:false,a:0});
+    const r=Math.hypot(h.p[0],h.p[1]), a=Math.atan2(h.p[1],h.p[0]);
+    st.grabbed=false;
+    if(!h.grip) st.held=false;
+    else if(!st.held&&Math.abs(r-WHEEL_R)<0.1&&Math.abs(h.p[2])<0.12){ st.held=true; st.a=a; st.grabbed=true; }
+    if(st.held&&(r>WHEEL_R+0.3||Math.abs(h.p[2])>0.35)) st.held=false;   // hand pulled away
+    if(st.held){ sum-=angDiff(a,st.a); st.a=a; n++; }
+  }
+  if(n) W.ang=clamp(W.ang+sum/n,-WHEEL_LOCK,WHEEL_LOCK);
+  else W.ang-=W.ang*Math.min(1,dt*(0.4+speed*0.15));
+  W.held=n>0;
+  return W.ang;
+}
+/* Meta Quest controllers. Triggers: gas (right) and brake (left). Grips: hold the steering wheel when the hand
+   is on the rim, otherwise signal. Left stick: steer (when no hand holds the wheel), push up or down like the
+   indicator stalk. Right stick: forward for D, back for R. */
 function pollXR(){
   const sess=V3.r.xr.getSession(); if(!sess) return;
+  const c=S.car, W=V3.wheel, wg=V3.wheelGroup, hands=[];
   let st=0,thr=0,brk=0;
   for(const src of sess.inputSources){
     const gp=src.gamepad; if(!gp) continue;
+    const side=src.handedness;
     const b=i=>gp.buttons[i]?(gp.buttons[i].value||(gp.buttons[i].pressed?1:0)):0;
     const ed=(k,v,fn)=>{const now=v>0.5; if(now&&!V3.prev[k]) fn(); V3.prev[k]=now;};
-    if(src.handedness==='left'){
-      st=gp.axes.length>=4?gp.axes[2]:(gp.axes[0]||0); brk=b(0);
-      ed('lg',b(1),()=>toggleInd(-1)); ed('x',b(4),xPress); ed('y',b(5),()=>{V3.needRecenter=true;});
+    const ax=i=>gp.axes.length>=4?gp.axes[i+2]:(gp.axes[i]||0);
+    // where is this hand relative to the wheel?
+    const gr=V3.gripBy[side]; let p=null;
+    if(gr&&wg&&V3.cockpit&&V3.cockpit.visible){ const v=new THREE.Vector3().setFromMatrixPosition(gr.matrixWorld); wg.worldToLocal(v); p=[v.x,v.y,v.z]; }
+    const nearRim=p&&Math.abs(Math.hypot(p[0],p[1])-WHEEL_R)<0.1&&Math.abs(p[2])<0.12;
+    const grip=b(1)>0.5;
+    if(p) hands.push({id:side,grip,p,src});
+    // a grip press away from the wheel still signals, as before
+    ed(side[0]+'g',b(1),()=>{ if(!nearRim) toggleInd(side==='left'?-1:1); });
+    if(side==='left'){
+      st=ax(0); brk=b(0);
+      ed('x',b(4),xPress); ed('y',b(5),()=>{V3.needRecenter=true;});
+      ed('stalkUp',-ax(1),()=>toggleInd(1)); ed('stalkDown',ax(1),()=>toggleInd(-1));
     } else {
       thr=b(0);
-      ed('rg',b(1),()=>toggleInd(1)); ed('a',b(4),()=>act('cruise')); ed('b',b(5),()=>act('mirror'));
+      ed('a',b(4),()=>act('cruise')); ed('b',b(5),()=>act('mirror'));
+      ed('gearD',-ax(1),()=>setGear('D')); ed('gearR',ax(1),()=>setGear('R'));
     }
   }
   st=Math.sign(st)*Math.pow(Math.max(0,Math.abs(st)-0.1)/0.9,1.4);
-  S.gp={st,thr,brk};
+  const dt=Math.min(0.05,Math.max(0.001,(V3.lastPoll?performance.now()-V3.lastPoll:16)/1000)); V3.lastPoll=performance.now();
+  if(c){
+    if(!W.mode) W.ang=c.steer*STEER_RATIO;            // wheel follows the stick until a hand takes it
+    wheelStep(W,hands,Math.abs(c.v),dt);
+    for(const h of hands){
+      const hs=W.h[h.id]; if(!hs) continue;
+      if(hs.grabbed){ W.mode=true; try{ const ha=h.src.gamepad.hapticActuators; if(ha&&ha[0]) ha[0].pulse(0.35,35); }catch(e){} }
+      const gl=V3.gripBy[h.id]&&V3.gripBy[h.id].userData.glove; if(gl) gl.material.color.set(hs.held?'#f4c514':'#2a2e33');
+    }
+    if(!W.held&&Math.abs(st)>0.15) W.mode=false;       // back to stick steering
+  }
+  S.gp={st,thr,brk,wheel:W.mode?W.ang/STEER_RATIO:null};
 }
 function recenterXR(xc){
   const T=THREE,pm=new T.Matrix4().copy(V3.rig.matrixWorld).invert().multiply(xc.matrixWorld);
@@ -1293,7 +1534,7 @@ function renderXR(dt){
   V3.rig.rotation.y=-c.h+V3.yawOff;
   const off=_v1.copy(V3.posOff).applyAxisAngle(_Y,V3.rig.rotation.y);
   V3.rig.position.set(c.x+fx*0.05-rx*0.38-off.x,1.25-off.y,c.y+fz*0.05-rz*0.38-off.z);
-  if(V3.wheelMesh) V3.wheelMesh.rotation.z=-c.steer*6;
+  if(V3.wheelMesh) V3.wheelMesh.rotation.z=-(V3.wheel.mode?V3.wheel.ang:c.steer*STEER_RATIO);
   V3.frames++;
   V3.hudT-=dt; if(V3.hudT<=0){ V3.hudT=0.1; drawVRHud(); }
   if(V3.frames%2===0){
@@ -1309,6 +1550,7 @@ function renderXR(dt){
   const dir=new THREE.Vector3(0,0,-1).applyQuaternion(_q);
   const rel=angDiff(Math.atan2(dir.x,-dir.z),c.h); S.headYaw=rel;
   if(rel<-1.05) c.lookLAgo=0; else if(rel>1.05) c.lookRAgo=0;
+  if(Math.abs(rel)>2.0) c.lookBAgo=0;
   for(const m of V3.mirrorPlanes){ const v=new THREE.Vector3().setFromMatrixPosition(m.mesh.matrixWorld).sub(hp).normalize(); if(v.dot(dir)>0.966) c.mirrorAgo=0; }
 }
 async function enterVR(){
@@ -1325,10 +1567,11 @@ async function enterVR(){
 }
 
 /* ---------- HUD ---------- */
-const hud={dir:$('#hudDir'),hint:$('#hudHint'),lim:$('#hudLim'),spd:$('#hudSpd'),cr:$('#hudCr'),cL:$('#cL'),cR:$('#cR'),cM:$('#cM'),cSL:$('#cSL'),cSR:$('#cSR'),toast:$('#toast'),mRear:$('#mRear'),mL:$('#mL'),mR:$('#mR'),wheel:$('#wheel'),stage:document.querySelector('.stage')};
+const hud={gear:$('#hudGear'),dir:$('#hudDir'),hint:$('#hudHint'),lim:$('#hudLim'),spd:$('#hudSpd'),cr:$('#hudCr'),cL:$('#cL'),cR:$('#cR'),cM:$('#cM'),cSL:$('#cSL'),cSR:$('#cSR'),toast:$('#toast'),mRear:$('#mRear'),mL:$('#mL'),mR:$('#mR'),wheel:$('#wheel'),stage:document.querySelector('.stage')};
 function updateHUD(){
   const c=S.car; if(!c) return;
-  hud.spd.textContent=Math.round(c.v*3.6);
+  hud.spd.textContent=Math.round(Math.abs(c.v)*3.6);
+  if(hud.gear.textContent!==c.gear){ hud.gear.textContent=c.gear; hud.gear.classList.toggle('rev',c.gear==='R'); }
   hud.cr.hidden=!(c.cruise>0);
   const lim=S.level.hudLimit(); if(hud.lim.textContent!==String(lim.v)) hud.lim.textContent=lim.v;
   if(hud.dir.textContent!==S.instr) hud.dir.textContent=S.instr;
@@ -1338,7 +1581,7 @@ function updateHUD(){
   hud.cL.classList.toggle('blink',c.ind===-1&&blink); hud.cR.classList.toggle('blink',c.ind===1&&blink);
   hud.cM.classList.toggle('on',c.mirrorAgo<1.2); hud.cSL.classList.toggle('on',c.lookLAgo<1.2); hud.cSR.classList.toggle('on',c.lookRAgo<1.2);
   hud.stage.classList.toggle('turned',S.view==='driver'&&Math.abs(S.headYaw||0)>0.5);
-  if(S.view==='driver'){ const on=c.mirrorAgo<1.5; for(const m of MIR) hud[m.id].classList.toggle('on',on); hud.wheel.style.transform=`rotate(${(c.steer*400).toFixed(1)}deg)`; }
+  if(S.view==='driver'){ const on=c.mirrorAgo<1.5; for(const m of MIR) hud[m.id].classList.toggle('on',on); hud.wheel.style.transform=`rotate(${(c.steer*STEER_RATIO*57.3).toFixed(1)}deg)`; }
   const t=S.toast;
   if(t&&S.time-t.t<3.5){ hud.toast.hidden=false; hud.toast.textContent=t.text; hud.toast.className='toast'+(t.sev!=='minor'?' serious':''); } else hud.toast.hidden=true;
 }
@@ -1348,8 +1591,8 @@ function prepare(){
   const lv=LEVELS[S.lvlId]; S.level=lv;
   Object.assign(S,{faults:[],faultKeys:new Set(),time:0,running:false,paused:false,ended:false,intervened:false,hint:'',hintT:-99,toast:null,hintsDone:new Set(),zoomInit:false,keys:{}});
   overT=0;overST=0;hbT=0;
-  lv.init({exit:+$('#exitSel').value||0,route:$('#routeSel').value});
-  $('#exitField').hidden=S.lvlId!=='roundabout'; $('#routeField').hidden=S.lvlId!=='farsta'; $('#attrib').hidden=S.lvlId!=='farsta';
+  lv.init({exit:+$('#exitSel').value||0,route:$('#routeSel').value,park:$('#parkSel').value});
+  $('#exitField').hidden=S.lvlId!=='roundabout'; $('#routeField').hidden=S.lvlId!=='farsta'; $('#parkField').hidden=S.lvlId!=='park'; $('#attrib').hidden=S.lvlId!=='farsta';
   S.headYaw=0; S.pitch=-0.02; S.camH=S.car.h;
   build3D();
   $('#banner').hidden=true;
@@ -1360,6 +1603,7 @@ const BRIEF={
   roundabout:'A one-lane roundabout with zebra crossings on every arm. Approach at 40, pick the right spot in your lane for your exit, give way to the left, and signal right on the way out.',
   highway:'You start at 100 km/h in the right lane. A truck is ahead with a tight queue in front of it, and your exit comes up in about 1.4 km. Decide well, check before every lane change, and brake in the exit lane.',
   country:'An 80 road through forest into a village. Bends, a cyclist, a car waiting at a side road and a bus at its stop. Read each situation before you reach it.',
+  park:()=>({parallel:'Parallel parking (fickparkering) between two cars on a 30 street. Signal, stop alongside the car in front of the gap, then reverse in. Finish straight, centred and close to the kerb.',bay:'Reverse into a marked bay in a car park, like the parking outside the test centre. Pass the bay, then reverse in and finish straight between the lines.',corner:'Reverse around a corner (backa runt hörn) into a side road on your right, keeping about half a metre to a metre from the kerb, then a few car lengths straight back.'})[PK.ex]+' Gear: R and D (key R). Look back: hold S. The examiner watches how much you look around.',
   farsta:()=>`The real streets around ${escapeHtml(FD.centre.name)}, from OpenStreetMap. <b>${escapeHtml(OSM.route.name)}</b>${OSM.route.desc?` (${escapeHtml(OSM.route.desc)})`:''}.${OSM.route.note?` ${escapeHtml(OSM.route.note)}`:''} You start at the test centre, standing still. Follow the directions at the top as you would the examiner's, and expect traffic lights, give-way rules and pedestrians.`
 };
 function showOverlay(kind){
@@ -1411,11 +1655,11 @@ function pollGamepad(){
     const b=i=>p.buttons[i]?(p.buttons[i].value||(p.buttons[i].pressed?1:0)):0;
     S.gp={st:p.axes[0]||0,thr:b(7),brk:b(6)};
     const edge=(i,fn)=>{const now=b(i)>0.5; if(now&&!S.gpPrev[i]) fn(); S.gpPrev[i]=now;};
-    edge(4,()=>toggleInd(-1)); edge(5,()=>toggleInd(1)); edge(2,()=>act('lookL')); edge(1,()=>act('lookR')); edge(3,()=>act('mirror')); edge(0,()=>act('cruise'));
+    edge(4,()=>toggleInd(-1)); edge(5,()=>toggleInd(1)); edge(2,()=>act('lookL')); edge(1,()=>act('lookR')); edge(3,()=>act('mirror')); edge(0,()=>act('cruise')); edge(8,()=>act('gear')); edge(11,()=>act('lookB'));
     break; } }catch(e){}
 }
 function tick(dt){
-  S.time+=dt; if(S.auto) autoDrive(); stepCar(dt); updateAI(dt); updatePeds(dt);
+  S.time+=dt; if(S.auto) autoDrive(); else if(S.manual) S.gp=S.manual; stepCar(dt); updateAI(dt); updatePeds(dt);
   if(!S.intervened&&!S.ended){ S.level.step(dt); if(!S.ended){ genericChecks(dt); collisions(); } }
   if(S.ai.length>60) S.ai=S.ai.filter(v=>!v.done);
 }
@@ -1435,9 +1679,9 @@ function autoDrive(){
   }
   for(const e of lv.ev){
     const d=e.s-pr.s; if(d<-15||d>45) continue;
-    if(d<0){ if(e.t==='node'&&(e.m==='turn'||e.m==='rb')) vt=Math.min(vt,Math.abs(e.angle||0)>1.1&&d>-8?3:6.5); continue; }
+    if(d<0){ if(e.t==='node'&&(e.m==='turn'||e.m==='rb')) vt=Math.min(vt,Math.abs(e.angle||0)>1.1&&d>-8?3:6.5); if(e.t==='node'&&e.m==='rb'&&e.out&&pr.s<e.out.s) vt=Math.min(vt,7); continue; }
     if(e.t==='light'){ const st=lv.net.lightState(e.cl,e.grp,S.time); if(st.st==='R'||(st.st==='Y'&&d>c.v*c.v/8)) vt=Math.min(vt,stopAt(d)); }
-    if(e.t==='node'&&e.m==='rb'){ vt=Math.min(vt,6+d*0.25); if(d>2&&lv.ringConflict(e.node,c)) vt=Math.min(vt,stopAt(d-3)); }
+    if(e.t==='node'&&e.m==='rb'){ vt=Math.min(vt,5+d*0.2); if(d>2&&lv.ringConflict(e.node,c)) vt=Math.min(vt,stopAt(d-3)); }
     if(e.t==='node'&&e.m==='turn'){
       vt=Math.min(vt,(Math.abs(e.angle||0)>1.1?2.6:4)+d*0.2);
       if(d<1) continue;
@@ -1446,6 +1690,7 @@ function autoDrive(){
         if(busy) vt=Math.min(vt,stopAt(d-7)); }
     }
     if(e.t==='zebra'&&S.peds.some(p=>p.ev===e&&p.state==='cross')) vt=Math.min(vt,stopAt(d-3));
+    if(e.t==='node'&&e.m==='merge'&&d<200) vt=Math.max(vt,lv.path.pts[idxAt(lv.path,e.s+40)].lim/3.6*0.85);   // speed up on the slip road
     if(e.t==='zebra'&&S.peds.some(p=>p.ev===e&&p.state!=='done')) vt=Math.min(vt,5.5+d*0.1);
   }
   // signals and checks like a careful driver
@@ -1479,14 +1724,14 @@ addEventListener('keydown',e=>{
   if(S.tab!=='drive'||!$('#report').hidden) return;
   if(e.target.matches&&e.target.matches('input,select,textarea')) return;
   const k=KEYMAP[e.key]; if(k){S.keys[k]=true;e.preventDefault();return;}
-  const kk=e.key.toLowerCase(); const HK={a:'lookL',d:'lookR',w:'mirror'};
+  const kk=e.key.toLowerCase(); const HK={a:'lookL',d:'lookR',w:'mirror',s:'lookB'};
   if(HK[kk]) S.keys['h_'+HK[kk]]=true;
   if(e.repeat) return;
-  if(kk==='q')act('sigL'); else if(kk==='e')act('sigR'); else if(kk==='w')act('mirror'); else if(kk==='a')act('lookL'); else if(kk==='d')act('lookR'); else if(kk==='c')act('cruise');
+  if(kk==='q')act('sigL'); else if(kk==='e')act('sigR'); else if(kk==='w')act('mirror'); else if(kk==='a')act('lookL'); else if(kk==='d')act('lookR'); else if(kk==='s')act('lookB'); else if(kk==='r')act('gear'); else if(kk==='c')act('cruise');
   else if(kk==='v'&&V3.ok){ const vs=['driver','chase','map']; setView(vs[(vs.indexOf(S.view)+1)%3]); }
   else if(kk===' '||kk==='p'){ e.preventDefault(); if(S.running){ S.paused=!S.paused; showOverlay(S.paused?'paused':'hide'); } else if(!S.ended) startDrive(); }
 });
-addEventListener('keyup',e=>{const k=KEYMAP[e.key]; if(k) S.keys[k]=false; const HK={a:'lookL',d:'lookR',w:'mirror'}[e.key.toLowerCase()]; if(HK) S.keys['h_'+HK]=false;});
+addEventListener('keyup',e=>{const k=KEYMAP[e.key]; if(k) S.keys[k]=false; const HK={a:'lookL',d:'lookR',w:'mirror',s:'lookB'}[e.key.toLowerCase()]; if(HK) S.keys['h_'+HK]=false;});
 addEventListener('blur',()=>{ if(V3.inXR) return; S.keys={}; if(S.running&&!S.paused){S.paused=true;showOverlay('paused');}});
 document.querySelectorAll('#pad [data-hold]').forEach(b=>{
   const k=b.dataset.hold;
@@ -1507,6 +1752,7 @@ document.querySelectorAll('#modeSeg button').forEach(b=>b.addEventListener('clic
 }));
 $('#exitSel').addEventListener('change',()=>prepare());
 $('#routeSel').addEventListener('change',()=>prepare());
+$('#parkSel').addEventListener('change',()=>prepare());
 
 /* ---------- tabs ---------- */
 document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>{
@@ -1660,7 +1906,7 @@ function videoKey(e){
 let resetArmed=false;
 function renderProgress(){
   const body=$('#progBody'); const D=P.drives;
-  const lv={roundabout:'Roundabout',highway:'Motorway exit',country:'Country road'}; if(LEVELS.farsta) lv.farsta='Farsta (real roads)';
+  const lv={roundabout:'Roundabout',highway:'Motorway exit',country:'Country road',park:'Parking and reversing'}; if(LEVELS.farsta) lv.farsta='Farsta (real roads)';
   const rows=Object.keys(lv).map(k=>{const ds=D.filter(d=>d.lvl===k); const last=ds[ds.length-1]; return `<tr><td>${lv[k]}</td><td class="n">${ds.length}</td><td class="n">${ds.filter(d=>d.pass).length}</td><td>${last?(last.pass?'<span class="verdict pass" style="font-size:11px">Godkänd</span>':'<span class="verdict fail" style="font-size:11px">Underkänd</span>'):'<span class="empty">Not driven</span>'}</td></tr>`;}).join('');
   const recent=D.slice(-10); const w={}; recent.forEach(d=>d.faults.forEach(f=>{w[f.cat]=(w[f.cat]||0)+(f.sev==='minor'?1:3);}));
   const maxW=Math.max(1,...Object.values(w));
@@ -1687,7 +1933,20 @@ if(LEVELS.farsta){
 } else if(fCard){ fCard.disabled=true; fCard.querySelector('span:last-child').textContent='Map data not built yet. Run npm run osm to download it from OpenStreetMap (see README).'; }
 if(/[?&]test\b/.test(location.search)) window.FDL_TEST={
   auto(on,scale,traffic){ S.auto=!!on; S.timeScale=scale||1; if(traffic===false&&S.level===OSM){ OSM.maxAI=0; OSM.noScripted=true; S.ai.forEach(v=>{v.done=true;}); } },
-  state(){ const lv=S.level; return {lvl:S.lvlId,running:S.running,ended:S.ended,time:S.time,faults:S.faults.map(f=>f.sev+': '+f.text),s:lv.ps,len:lv.path?lv.path.len:null,ai:S.ai.filter(v=>!v.done).length,peds:S.peds.length,instr:S.instr,route:lv.subtitle?lv.subtitle():null,reroutes:lv.reroutes||0}; },
+  /* drive with analogue inputs {st|wheel, thr, brk}; null hands control back */
+  drive(gp){ S.manual=gp; },
+  act(a){ act(a); },
+  /* park the car exactly on the exercise's target, to check the finish and evaluation */
+  solve(){ const T=S.level.target; if(!T) return false; Object.assign(S.car,{x:T.x,y:T.y,h:T.h,v:0,steer:0}); return true; },
+  /* grab the VR wheel at 3 o'clock, turn the hand a quarter turn clockwise, let go and drive 3 s at 10 m/s */
+  wheel(){ const W={ang:0,h:{}}, P=a=>[WHEEL_R*Math.cos(a),WHEEL_R*Math.sin(a),0]; const out={};
+    wheelStep(W,[{id:'right',grip:true,p:P(0)}],0,0.02);
+    for(let i=1;i<=10;i++) wheelStep(W,[{id:'right',grip:true,p:P(-i*Math.PI/20)}],0,0.02);
+    out.turned=W.ang; out.held=W.held;
+    wheelStep(W,[{id:'right',grip:false,p:P(-Math.PI/2)},{id:'left',grip:true,p:[0.5,0.5,0.5]}],0,0.02); out.farGrab=W.held;
+    for(let i=0;i<150;i++) wheelStep(W,[],10,0.02); out.centred=W.ang;
+    return out; },
+  state(){ const lv=S.level; return {car:S.car&&{x:S.car.x,y:S.car.y,h:S.car.h,v:S.car.v,gear:S.car.gear},lvl:S.lvlId,running:S.running,ended:S.ended,time:S.time,faults:S.faults.map(f=>f.sev+': '+f.text),s:lv.ps,len:lv.path?lv.path.len:null,ai:S.ai.filter(v=>!v.done).length,peds:S.peds.length,instr:S.instr,route:lv.subtitle?lv.subtitle():null,reroutes:lv.reroutes||0}; },
   near(){ const c=S.car; return {car:{x:c.x,y:c.y,h:c.h,v:c.v},ai:S.ai.filter(v=>!v.done&&Math.hypot(v.x-c.x,v.y-c.y)<40).map(v=>({x:v.x,y:v.y,h:v.h,v:v.v,s:v.s,kind:v.kind,assert:!!v.assert,parked:!!v.parked,rel:rel(v),jn:v.jn&&v.jn.map(j=>({n:j.node,d:j.s-v.s}))}))}; }
 };
 S.view='map';

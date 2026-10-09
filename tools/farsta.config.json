@@ -19,9 +19,9 @@
       "name": "Nynäsvägen south, Huddinge exit, Lissmavägen",
       "note": "Road 73 towards Nynäshamn, exit towards Huddinge at Länna, out along Lissmavägen (road 605, country road), back on road 73 north to Farsta. From students' accounts on korkortonline.se.",
       "via": [
-        { "road": "73", "heading": 160, "near": [59.215, 18.110] },
-        { "road": "Lissmavägen", "near": [59.198, 18.060], "radius": 3000 },
-        { "road": "73", "heading": 340, "near": [59.225, 18.100] }
+        { "road": "73", "heading": 170, "near": [59.2120, 18.1335] },
+        { "road": "Lissmavägen", "near": [59.1850, 18.0950], "radius": 1500 },
+        { "road": "73", "heading": 350, "near": [59.2120, 18.1335] }
       ]
     },
     {

@@ -52,11 +52,13 @@ Custom routes in the config: waypoints are resolved by `resolveWaypoint` in `too
 
 ## Farsta roads: status and next steps
 
-Done: the pipeline, the `OSM` level, the Farsta card with a route picker, attribution, unit tests and the smoke test (see above). It was built and tested against the synthetic network in `tests/fixtures/mini.osm.json`, because the build environment could not reach Overpass.
+Done: the pipeline, the `OSM` level, the Farsta card with a route picker, attribution, unit tests and the smoke test (see above). The real map data is in `data/` (the user ran `npm run osm`; the cloud build environment cannot reach Overpass). The test centre is found by its address. After `npm run osm:build`, all seven routes build: the four exam-style ones (Huddinge exit and Lissmavägen, Vega, Norrby, towards Stockholm, 12 to 17 km) and three generated loops of 5 to 6 km. The test autopilot drives them on the real data (see `FDL_TEST.auto`), which is the quickest way to find geometry problems: run it without traffic and look for "Left the road" or serious faults.
+
+Lessons from the real data: slip roads join the motorway centreline in OSM, so `pathPoints` moves into the right lane over 80 m after joining and back over 80 m before an exit; off-road checks use `Net.onRoad` (any road surface under the car), not only the nearest edge; högerregeln (`ctrl` right) only applies when a road actually joins from the right.
 
 Next:
-1. Run `npm run osm` where Overpass is reachable, commit `data/`, and drive the generated routes. Check the warnings it prints (test centre address found, routes generated) and look at the screenshots. Real data will show things the fixture does not: dual carriageways, slip roads, multi-lane roundabouts, signal nodes far from the junction node, missing names.
-2. Check the four exam-style routes in `tools/farsta.config.json` on the real data (they come from the user and from students' accounts on korkortonline.se; the waypoint positions are approximate). Ask the user about more, for example Fagersjö's level crossing, Skarpnäck and old Enskede, which students also mention.
+1. Drive the routes yourself in all views and check the directions against the real signs. The waypoint positions for the exam routes were placed from the real data, but the route between them is the shortest one.
+2. Ask the user about more routes, for example Fagersjö's level crossing, Skarpnäck and old Enskede, which students also mention.
 3. Turn restrictions (`restriction` relations) in routing, and `turn:lanes` for lane choice and lane-position scoring on multi-lane roads (currently not scored there).
 4. Multi-lane roundabouts: lane choice by exit.
 5. Left turns at lights: give way to oncoming traffic.

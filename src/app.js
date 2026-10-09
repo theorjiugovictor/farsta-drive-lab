@@ -617,12 +617,13 @@ const OSM={
     const c=S.car, net=this.net, pr=project(this.path,c.x,c.y,this.hint); this.hint=pr.i;
     const s=pr.s, prev=this.prevS==null?s:this.prevS; this.ps=s;
     const nr=this.near=net.nearest(c.x,c.y,30);
-    if(!nr||nr.d>nr.half+1.8){ this.offT+=dt; if(this.offT>0.25){ fault('maneuver','Left the road','intervention','off'); return; } } else this.offT=0;
+    if(!net.onRoad(c.x,c.y,1.8)){ this.offT+=dt; if(this.offT>0.25){ fault('maneuver','Left the road','intervention','off'); return; } } else this.offT=0;
     if(nr&&nr.way.ow&&nr.d<nr.half&&c.v>1.5&&Math.cos(angDiff(c.h,nr.h))<-0.3){ this.wrongT+=dt; if(this.wrongT>1){ fault('rules','Drove against the direction of a one-way street','intervention','wrongway'); return; } } else this.wrongT=0;
     // lane changes on one-way roads with several lanes (motorway, ramps, big streets)
     if(nr&&nr.way.ow&&nr.way.ln>1&&!nr.way.rb&&nr.d<nr.half&&Math.cos(angDiff(c.h,nr.h))>0.8){
       const ln=nr.way.ln, f=(nr.lat+nr.way.w/2)/(nr.way.w/ln);
-      if(this.lane==null||this.laneEdge!==nr.e||nr.s<25||nr.s>nr.e.len-25) this.lane=clamp(Math.floor(f),0,ln-1);   // not scored near junctions
+      const nearRamp=this.nodes.some(e=>(e.m==='merge'||e.m==='exit')&&Math.abs(e.s-s)<110);   // joining and leaving have their own checks
+      if(this.lane==null||this.laneEdge!==nr.e||nr.s<25||nr.s>nr.e.len-25||nearRamp) this.lane=clamp(Math.floor(f),0,ln-1);   // not scored near junctions
       else if(f<this.lane-0.15&&this.lane>0){ laneChangeCheck(this.lane,this.lane-1); this.lane--; }
       else if(f>this.lane+1.15&&this.lane<ln-1){ laneChangeCheck(this.lane,this.lane+1); this.lane++; }
       this.laneEdge=nr.e;
@@ -1678,9 +1679,9 @@ function autoDrive(){
   }
   for(const e of lv.ev){
     const d=e.s-pr.s; if(d<-15||d>45) continue;
-    if(d<0){ if(e.t==='node'&&(e.m==='turn'||e.m==='rb')) vt=Math.min(vt,Math.abs(e.angle||0)>1.1&&d>-8?3:6.5); continue; }
+    if(d<0){ if(e.t==='node'&&(e.m==='turn'||e.m==='rb')) vt=Math.min(vt,Math.abs(e.angle||0)>1.1&&d>-8?3:6.5); if(e.t==='node'&&e.m==='rb'&&e.out&&pr.s<e.out.s) vt=Math.min(vt,7); continue; }
     if(e.t==='light'){ const st=lv.net.lightState(e.cl,e.grp,S.time); if(st.st==='R'||(st.st==='Y'&&d>c.v*c.v/8)) vt=Math.min(vt,stopAt(d)); }
-    if(e.t==='node'&&e.m==='rb'){ vt=Math.min(vt,6+d*0.25); if(d>2&&lv.ringConflict(e.node,c)) vt=Math.min(vt,stopAt(d-3)); }
+    if(e.t==='node'&&e.m==='rb'){ vt=Math.min(vt,5+d*0.2); if(d>2&&lv.ringConflict(e.node,c)) vt=Math.min(vt,stopAt(d-3)); }
     if(e.t==='node'&&e.m==='turn'){
       vt=Math.min(vt,(Math.abs(e.angle||0)>1.1?2.6:4)+d*0.2);
       if(d<1) continue;
@@ -1689,6 +1690,7 @@ function autoDrive(){
         if(busy) vt=Math.min(vt,stopAt(d-7)); }
     }
     if(e.t==='zebra'&&S.peds.some(p=>p.ev===e&&p.state==='cross')) vt=Math.min(vt,stopAt(d-3));
+    if(e.t==='node'&&e.m==='merge'&&d<200) vt=Math.max(vt,lv.path.pts[idxAt(lv.path,e.s+40)].lim/3.6*0.85);   // speed up on the slip road
     if(e.t==='zebra'&&S.peds.some(p=>p.ev===e&&p.state!=='done')) vt=Math.min(vt,5.5+d*0.1);
   }
   // signals and checks like a careful driver

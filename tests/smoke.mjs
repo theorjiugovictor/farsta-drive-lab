@@ -68,12 +68,15 @@ for (const lvl of ['roundabout', 'highway', 'country', 'park', 'farsta']) {
 async function autopilot(view, traffic, simSeconds) {
   if (await page.locator('#report').isVisible()) await page.click('#closeRep');
   await page.click('.scard[data-lvl=farsta]');
+  // a town loop of a few km (the exam routes on the real map are 12 to 17 km, too long for a smoke test)
+  const loop = await page.$$eval('#routeSel option', (o) => (o.find((x) => x.textContent.startsWith('Route B')) || o[0]).value);
+  await page.selectOption('#routeSel', loop);
   await page.click(`#viewSeg [data-view=${view}]`);
   await page.click('#goBtn');
   await page.evaluate((t) => window.FDL_TEST.auto(true, 10, t), traffic);
   const t0 = Date.now();
   let st, shot = false;
-  while (Date.now() - t0 < 150000) {
+  while (Date.now() - t0 < 240000) {
     st = await page.evaluate(() => window.FDL_TEST.state());
     if (st.ended || st.time > simSeconds) break;
     if (!shot && st.s > st.len * 0.3) { shot = true; await page.locator('.stage').screenshot({ path: path.join(out, `farsta-auto-${view}.png`) }); }

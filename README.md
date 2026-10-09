@@ -67,7 +67,7 @@ To test on a Quest over your local network, WebXR needs HTTPS. GitHub Pages prov
 
 ## Farsta map data (OpenStreetMap)
 
-The Farsta scenario needs map data, which is not in the repository yet. Build it once:
+The Farsta scenario uses map data in `data/`, built from OpenStreetMap. To refresh it (for example after changing the areas or routes), run:
 
 ```bash
 npm run osm          # = npm run osm:fetch && npm run osm:build

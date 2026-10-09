@@ -6,13 +6,14 @@ It runs in any modern browser, and in VR on Meta Quest.
 
 ## What is in it
 
-**Drive practice.** Three scenarios, each built around a common reason people fail:
+**Drive practice.** Three generic scenarios, each built around a common reason people fail, plus the real streets around the Farsta test centre:
 
 | Scenario | What it trains |
 | --- | --- |
 | Roundabout | Lane position for your exit, giving way to the left, zebra crossings, signalling out |
 | Motorway exit | A slow truck with a tight queue ahead. Overtake or stay, lane changes with checks, braking in the exit lane |
 | Country road | Bends, a cyclist with oncoming traffic, a car pulling out of a side road, a bus leaving its stop in a 50 zone |
+| Farsta (real roads) | The streets around Trafikverket's test centre at Fryksdalsbacken 20, built from OpenStreetMap. Pick a route and follow the spoken-style directions ("In 200 m, at the roundabout, take the 2nd exit"). Scored on turns, roundabouts, traffic lights, zebra crossings, give-way and högerregeln junctions, buses leaving stops and speed limits, with AI traffic all around |
 
 **Coach** mode shows hints and faults as you drive. **Test** mode stays silent and gives you the report at the end.
 
@@ -59,6 +60,25 @@ npm start            # serves the folder on http://localhost:8080
 
 To test on a Quest over your local network, WebXR needs HTTPS. GitHub Pages provides that. Locally you can use a tunnel such as `npx localtunnel --port 8080`.
 
+## Farsta map data (OpenStreetMap)
+
+The Farsta scenario needs map data, which is not in the repository yet. Build it once:
+
+```bash
+npm run osm          # = npm run osm:fetch && npm run osm:build
+```
+
+- `tools/fetch-osm.mjs` asks the Overpass API for drivable roads, signals, crossings, give-way and stop nodes, bus stops, sign nodes and buildings in the box set in `tools/farsta.config.json`, and saves the raw answer to `data/farsta.osm.json`.
+- `tools/osm-to-level.mjs` turns that into `data/farsta.level.json` and `data/farsta.level.js` (the same data as a script, so the app also works from `file://`). It projects to metres around the test centre, builds the junction graph, simplifies the roads, places signs and traffic lights, and generates three practice routes that start and end at the test centre.
+
+The app never calls Overpass itself. Commit the files in `data/` so GitHub Pages serves them.
+
+**Routes.** The generated routes are loops picked to cover roundabouts, traffic lights, unmarked junctions, zebra crossings and bus stops. They are not the examiners' routes. If your driving school tells you which roads the Farsta examiners use, add them to `routes` in `tools/farsta.config.json` as a name and a list of `[lat, lon]` waypoints, then run `npm run osm:build` again. The app also offers a random route.
+
+**What the data cannot tell.** OpenStreetMap often lacks give-way signs. Where none is mapped, the app assumes that a smaller road gives way to a bigger one, applies högerregeln between equal small streets, and does not score priority between equal bigger roads. Traffic light timings are made up (two phases, about 36 seconds). Turn restrictions and lane arrows are not used yet.
+
+Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), available under the Open Database License. The app shows this credit whenever the Farsta scenario is open.
+
 ## Tests
 
 ```bash
@@ -67,21 +87,25 @@ npx playwright install chromium
 npm test
 ```
 
-The smoke test drives every scenario in every view in headless Chromium with software WebGL, saves screenshots to `tests/output/` and fails on any page error.
+`npm test` runs two things:
+
+- `tests/osm.test.mjs`: unit tests for the projection, simplification, conversion, snapping to the road graph, routing and route events, on a small synthetic network in `tests/fixtures/mini.osm.json` (made up for testing, not real map data; regenerate it with `npm run fixture`).
+- `tests/smoke.mjs`: drives every scenario in every view in headless Chromium with software WebGL, lets an autopilot drive a whole Farsta route at ten times speed, saves screenshots to `tests/output/` and fails on any page error. Without `data/farsta.level.js` it uses the synthetic network for the Farsta scenario.
 
 ## Layout
 
 ```
-index.html        markup
-src/styles.css    styles and theme tokens
-src/app.js        everything else: physics, scenarios, scoring, rendering, VR, quiz, video drills
-tests/smoke.mjs   headless smoke test
-CLAUDE.md         architecture notes and the OpenStreetMap roadmap, for Claude Code
+index.html                markup
+src/styles.css            styles and theme tokens
+src/app.js                everything else: physics, scenarios, scoring, rendering, VR, quiz, video drills
+src/osm-lib.js            road graph, routing and route events, shared by the app, the tools and the tests
+tools/farsta.config.json  map area, test centre address, custom routes
+tools/fetch-osm.mjs       downloads OpenStreetMap data
+tools/osm-to-level.mjs    builds the Farsta level from it
+data/                     map data for the Farsta scenario (after npm run osm)
+tests/                    unit tests, smoke test, synthetic fixture
+CLAUDE.md                 architecture notes, for Claude Code
 ```
-
-## Roadmap
-
-The scenarios are generic Swedish road types, not Farsta's real streets. The next step is to build them from OpenStreetMap data around the Farsta test centre. See `CLAUDE.md` for the plan.
 
 ## Disclaimer
 

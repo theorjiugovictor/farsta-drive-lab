@@ -16,7 +16,7 @@ const CATS={
   maneuver:{en:'Routine maneuvering',sv:'Manövrering'},
   rules:{en:'Apply the traffic rules',sv:'Trafikregler'}
 };
-const ORD=['','1st','2nd','3rd','4th'];
+const ORD=['','1st','2nd','3rd','4th','5th','6th','7th'];
 const DIR=['','right','straight ahead','left'];
 const ASPH='#3b3e43', LINE='#eef0ee';
 const VCOL=['#6b7c93','#b8bec6','#2f3a48','#8e2b23','#d9d4c7','#46607a','#a3a89b','#5a4a3f'];
@@ -125,8 +125,9 @@ function updateAI(dt){
     let target=v.vDes;
     if(v.script) target=v.script(v,target,dt);
     const fx=Math.sin(v.h),fy=-Math.cos(v.h);
-    for(const o of S.ai.concat([S.car])){
+    if(!v.ownFollow) for(const o of S.ai.concat([S.car])){
       if(o===v||o.done) continue; if(o===S.car&&v.ignorePlayer) continue;
+      if(Math.abs(angDiff(o.h,v.h))>2.3) continue;   // oncoming traffic is never the car in front
       const dx=o.x-v.x,dy=o.y-v.y,f=dx*fx+dy*fy,l=-dx*fy+dy*fx;
       if(f>0&&f<70&&Math.abs(l)<2.0){ const gap=f-(v.len+o.len)/2; target=Math.min(target,Math.max(0,o.v+(gap-3)/1.3)); }
     }
@@ -140,9 +141,9 @@ function updateAI(dt){
 function updatePeds(dt){
   for(const p of S.peds){
     if(p.state==='wait'&&p.trigger()) p.state='cross';
-    if(p.state==='cross'){ p.lat+=p.dir*1.3*dt; if(Math.abs(p.lat)>5.6&&Math.sign(p.lat)===p.dir) p.state='done'; }
-    const ux=Math.cos(p.a),uy=Math.sin(p.a),nx=Math.sin(p.a),ny=-Math.cos(p.a);
-    p.x=ux*p.r+nx*p.lat; p.y=uy*p.r+ny*p.lat;
+    if(p.state==='cross'){ p.lat+=p.dir*1.3*dt; if(Math.abs(p.lat)>(p.half||5.6)&&Math.sign(p.lat)===p.dir) p.state='done'; }
+    const ox=p.ox!=null?p.ox:Math.cos(p.a)*p.r, oy=p.oy!=null?p.oy:Math.sin(p.a)*p.r, nx=Math.sin(p.a), ny=-Math.cos(p.a);
+    p.x=ox+nx*p.lat; p.y=oy+ny*p.lat;
   }
 }
 function circles(o){const fx=Math.sin(o.h),fy=-Math.cos(o.h),n=Math.max(2,Math.round(o.len/2.2)),r=o.wid/2,out=[]; for(let i=0;i<n;i++){const t=(i/(n-1)-0.5)*(o.len-o.wid); out.push([o.x+fx*t,o.y+fy*t,r]);} return out;}
@@ -475,7 +476,414 @@ const CR={
     for(const h of this.houses){ g.save(); g.translate(h.x,h.y); g.rotate(h.h); g.fillStyle='#8e2b23'; g.fillRect(-h.w/2,-h.d/2,h.w,h.d); g.fillStyle='#e9e4da'; g.fillRect(-h.w/2,-0.25,h.w,0.5); g.restore(); }
   }
 };
+/* ---------- Farsta: real roads from OpenStreetMap ----------
+   Data comes from data/farsta.level.js (built by tools/osm-to-level.mjs), the network helpers from
+   src/osm-lib.js. Map data © OpenStreetMap contributors. */
+const FD=window.FDL_FARSTA||null, OL=window.FDL_OSM||null;
+function idxAt(path,s){ const p=path.pts; if(s<=0) return 0; if(s>=path.len) return p.length-1; let lo=0,hi=p.length-1; while(hi-lo>1){const m=(lo+hi)>>1; if(p[m].s<s)lo=m; else hi=m;} return lo; }
+function relTo(v,o){const fx=Math.sin(v.h),fy=-Math.cos(v.h),dx=o.x-v.x,dy=o.y-v.y; return {f:dx*fx+dy*fy,l:-dx*fy+dy*fx};}
+const capFirst=t=>t.charAt(0).toUpperCase()+t.slice(1);
+const OSM={
+  id:'farsta',title:'Farsta',ground:'#5f7653',maxAI:12,
+  setup(){
+    if(this.net) return;
+    const net=this.net=new OL.Net(FD);
+    this.bld=FD.bld.map(b=>{ const pts=[]; let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for(let i=1;i<b.length;i+=2){ pts.push([b[i],b[i+1]]); x0=Math.min(x0,b[i]); x1=Math.max(x1,b[i]); y0=Math.min(y0,b[i+1]); y1=Math.max(y1,b[i+1]); } return {lv:b[0],pts,bb:[x0,y0,x1,y1],cx:(x0+x1)/2,cy:(y0+y1)/2}; });
+    this.bgrid=new Map(); this.bld.forEach(b=>{ for(let i=Math.floor(b.bb[0]/40);i<=Math.floor(b.bb[2]/40);i++) for(let j=Math.floor(b.bb[1]/40);j<=Math.floor(b.bb[3]/40);j++){ const k=i+','+j; let l=this.bgrid.get(k); if(!l) this.bgrid.set(k,l=[]); l.push(b); } });
+    this.heads=[...net.lightAp.entries()].map(([de,ap])=>{ const e=net.eOf(de), p=net.pointAt(de,net.len(de)-ap.stop), off=e.half+0.9; return {cl:ap.cl,grp:ap.grp,x:p.x-p.ty*off,y:p.y+p.tx*off,sx:p.x,sy:p.y,tx:p.tx,ty:p.ty,half:e.half,ow:e.way.ow}; });
+    this.zebras=FD.feats.filter(f=>f.t==='zebra').map(f=>{ const e=net.E[f.e], p=net.pointAt(2*f.e,f.s); return {x:f.x,y:f.y,tx:p.tx,ty:p.ty,w:e.way.w}; });
+    this.teeth=[];
+    for(const f of FD.feats){ if(f.t!=='give_way'&&f.t!=='stop') continue; const e=net.E[f.e], de=f.d===1?2*f.e:2*f.e+1, p=net.pointAt(de,f.d===1?f.s:e.len-f.s); this.teeth.push({x:p.x,y:p.y,tx:p.tx,ty:p.ty,half:e.half,ow:e.way.ow,stop:f.t==='stop'}); }
+    for(let n=0;n<net.N;n++){
+      const ring=net.out[n].find(d=>net.rb(d)); if(ring==null) continue;
+      for(const d of net.inc[n]){ if(net.rb(d)) continue; const e=net.eOf(d), L=net.len(d), p=net.pointAt(d,Math.max(0,L-net.eOf(ring).half-0.6)); this.teeth.push({x:p.x,y:p.y,tx:p.tx,ty:p.ty,half:e.half,ow:e.way.ow}); }
+    }
+  },
+  init(o){
+    this.setup(); const net=this.net; this.maxAI=12; this.noScripted=false;
+    let r=o.route&&o.route!=='random'?FD.routes.find(x=>x.id===o.route):null;
+    if(!r&&(o.route==='random'||!FD.routes.length)){
+      const g=net.generateFrom(FD.centre.x,FD.centre.y,{rb:3,sig:3,right:3,yield:2,zebra:1,bus:1,turn:1},OL.rng(Math.random()*4e9),{minLen:1500,maxLen:5000,tries:20});
+      if(g) r={id:'random',name:'Random route',desc:`${(g.stats.len/1000).toFixed(1)} km`,de:g.de,s0:g.s0};
+    }
+    if(!r) r=FD.routes[0];
+    this.route=r; this.goal=net.from(r.de[0]);
+    Object.assign(this,{gen:0,offT:0,wrongT:0,orT:0,spawnT:0,res:new Map(),specials:0,reroutes:0,near:null,ps:0});
+    S.ai=[]; S.peds=[];
+    this.setRoute(r.de,r.s0);
+    const p0=this.path.pts[0]; S.car=mkCar(p0.x,p0.y,Math.atan2(p0.tx,-p0.ty),0);
+    this.prepScenery();
+    for(let i=0;i<8;i++) this.spawnAI(45,260);
+    S.instr=this.instrText();
+  },
+  subtitle(){ return this.route?this.route.name:''; },
+  setRoute(de,s0){
+    const net=this.net, pp=net.pathPoints(de,s0), path=finalize(pp.pts);
+    let z=0,prev=null;
+    path.pts.forEach((p,i)=>{ const q=pp.pts[i]; p.w=q.w; p.rb=q.rb; p.lim=OL.wayLimit(FD.ways[q.w]); if(prev!=null&&p.lim!==prev) z++; prev=p.lim; p.z=z; });
+    this.path=path; this.de=de; this.hint=null; this.prevS=null; this.gen++;
+    const ev=net.events(de,s0,pp.ends);
+    for(const e of ev){ e.s=project(path,e.x,e.y,e.pi).s; e.key=this.gen+'_'+e.id; }
+    ev.sort((a,b)=>a.s-b.s);
+    let nRight=0,nZebra=0;
+    for(const e of ev){
+      if(e.t==='node'&&e.m==='rb'){ e.out=ev.find(x=>x.t==='rbout'&&x.s>=e.s); e.spawnRing=Math.random()<0.65; }
+      if(e.t==='node'&&e.ctrl==='right'&&nRight<2){ nRight++; e.spawnRight=Math.random()<0.75; }
+      if(e.t==='zebra'&&e.s>40&&nZebra<3&&Math.random()<0.6){ nZebra++; this.mkPed(e); }
+    }
+    this.busEv=ev.find(e=>e.t==='bus'&&e.lim<=50&&e.s>150)||null;
+    this.ev=ev; this.nodes=ev.filter(e=>e.t==='node');
+    this.hints=this.mkHints();
+  },
+  mkPed(e){
+    const side=Math.random()<0.5?1:-1, half=e.half+1.4;
+    S.peds.push({id:Math.random(),a:e.a,ox:e.x,oy:e.y,half,lat:side*half,dir:-side,state:'wait',ev:e,x:e.x,y:e.y,
+      trigger:()=>{ const d=e.s-this.ps; return d>0&&d<Math.max(22,S.car.v*4.2); }});
+  },
+  reroute(){
+    const c=S.car, st=this.net.nearestDe(c.x,c.y,c.h,15); if(!st) return;
+    const r=this.net.route(st.de,this.goal); if(!r) return;
+    S.peds=S.peds.filter(p=>p.state==='cross');
+    this.setRoute(r,st.s); this.reroutes++;
+    if(S.mode==='coach'){ S.hint='You left the planned route. That is not a fault on its own: follow the new directions.'; S.hintT=S.time; }
+  },
+  instrText(){
+    const s=this.ps||0, nx=this.nodes.find(e=>e.s>s-3);
+    if(nx&&nx.s-s<320){
+      const d=nx.s-s, pre=d>30?`In ${Math.max(10,Math.round(d/10)*10)} m, `:'', onto=nx.name?` onto ${nx.name}`:'';
+      if(nx.m==='rb') return capFirst(`${pre}at the roundabout, take the ${ORD[nx.n]||nx.n+'th'} exit${onto}`);
+      if(nx.dir==='straight') return capFirst(`${pre}straight ahead ${nx.ctrl==='signals'?'at the lights':'at the junction'}`);
+      if(nx.dir==='back') return capFirst(`${pre}turn around where it is safe`);
+      return capFirst(`${pre}turn ${nx.dir}${nx.ctrl==='signals'?' at the lights':''}${onto}`);
+    }
+    if(this.path.len-s<250) return 'Drive back to the test centre';
+    const w=FD.ways[this.path.pts[idxAt(this.path,s)].w]; return w&&w.n?`Follow ${w.n}`:'Follow the road';
+  },
+  mkHints(){
+    const H=[], near=(e,dmax)=>()=>{ const d=e.s-(this.ps||0); return d>0&&d<dmax; };
+    for(const e of this.ev){
+      if(e.t==='node'&&e.m==='rb'){
+        const plan=e.dir==='right'?'Going right: signal right already now and keep to the right part of your lane.':e.dir==='left'?'Going left: keep to the left part of your lane, close to the centre line.':'Going straight: keep to the middle of your lane. No signal on the way in.';
+        H.push({when:near(e,160),t:`Roundabout ahead, ${ORD[e.n]||e.n+'th'} exit. ${plan} Give way to traffic already in it.`});
+      } else if(e.t==='node'){
+        let t='';
+        if(e.dir==='left') t='Left turn ahead: mirrors, signal left early and move towards the centre line.';
+        else if(e.dir==='right') t='Right turn ahead: mirrors, signal right, keep right and look over your right shoulder for cyclists.';
+        if(e.ctrl==='right') t+=(t?' ':'')+'No signs at this junction, so högerregeln applies: give way to traffic from your right.';
+        else if(e.ctrl==='stop') t+=(t?' ':'')+'Stop sign: stop completely at the line.';
+        else if(e.ctrl==='give_way') t+=(t?' ':'')+'Give-way line ahead: slow down and be ready to stop.';
+        else if(e.ctrl==='yield') t+=(t?' ':'')+'You are coming out onto a bigger road: expect to give way.';
+        if(t) H.push({when:near(e,140),t});
+      } else if(e.t==='light') H.push({when:near(e,130),t:'Traffic lights ahead. Watch them early: if they turn amber and you can stop safely, stop.'});
+      else if(e.t==='zebra') H.push({when:near(e,90),t:'Zebra crossing ahead. Scan the pavements: is someone about to cross?'});
+    }
+    if(this.busEv){ const e=this.busEv; H.push({when:near(e,170),t:'Bus stop ahead. In a 50 zone you must let a bus pull out when it signals.'}); }
+    const P=this.path.pts; for(let i=1;i<P.length;i++) if(P[i].lim<P[i-1].lim){ const s=P[i].s, lim=P[i].lim; H.push({when:()=>{const d=s-(this.ps||0); return d>0&&d<110;},t:`The limit drops to ${lim} ahead. Be down to ${lim} by the sign, not after it.`}); }
+    return H;
+  },
+  checkLimit(){ const P=this.path.pts, s=this.ps||0; return Math.max(P[idxAt(this.path,s)].lim,P[idxAt(this.path,s-30)].lim); },
+  hudLimit(){ return {v:this.path.pts[idxAt(this.path,this.ps||0)].lim}; },
+  zone(){ return 'z'+this.gen+'_'+this.path.pts[idxAt(this.path,this.ps||0)].z; },
+  step(dt){
+    const c=S.car, net=this.net, pr=project(this.path,c.x,c.y,this.hint); this.hint=pr.i;
+    const s=pr.s, prev=this.prevS==null?s:this.prevS; this.ps=s;
+    const nr=this.near=net.nearest(c.x,c.y,30);
+    if(!nr||nr.d>nr.half+1.8){ this.offT+=dt; if(this.offT>0.25){ fault('maneuver','Left the road','intervention','off'); return; } } else this.offT=0;
+    if(nr&&nr.way.ow&&nr.d<nr.half&&c.v>1.5&&Math.cos(angDiff(c.h,nr.h))<-0.3){ this.wrongT+=dt; if(this.wrongT>1){ fault('rules','Drove against the direction of a one-way street','intervention','wrongway'); return; } } else this.wrongT=0;
+    if(pr.dist>8&&c.v>0.5&&nr&&nr.d<nr.half+0.5){ this.orT+=dt; if(this.orT>0.8){ this.orT=0; this.reroute(); return; } } else this.orT=0;
+    this.checks(s,prev,pr.lat);
+    this.traffic(dt);
+    S.instr=this.instrText();
+    this.prevS=s;
+    if(s>this.path.len-10&&pr.dist<8) finish();
+  },
+  checks(s,prev,lat){
+    const c=S.car, kmh=c.v*3.6, cross=x=>prev<x&&s>=x;
+    for(const e of this.ev){
+      const d=e.s-s, K=e.key; if(d>200||d<-80) continue;
+      if(e.t==='node'&&e.m==='turn'){
+        const L=e.dir==='left', R=e.dir==='right';
+        if((L||R)&&e.oneLane&&cross(e.s-22)){
+          if(L&&lat>0.45) fault('place','Not positioned towards the centre line before turning left','minor','pos'+K,'Turning left: move over towards the centre line in good time, so traffic behind can pass on your right.');
+          if(R&&lat<-0.6) fault('place','Not keeping to the right before turning right','minor','pos'+K,'Turning right: keep to the right part of your lane before the turn.');
+        }
+        if((L||R)&&cross(e.s-6)){
+          const last=L?c.lastLeft:c.lastRight;
+          if(S.time-last>1) fault('rules',`No signal before turning ${e.dir}`,'minor','sig'+K,'Signal in good time before every turn, after checking the mirrors.');
+          else if(c.ind===(L?-1:1)&&c.indOn<1.5) fault('interact',`Signalled late before turning ${e.dir}`,'minor','sigl'+K,'Give the signal early enough for others to react, about 50 to 100 m before the turn in town.');
+          if(c.mirrorAgo>8) fault('attention',`No mirror check before turning ${e.dir}`,'minor','mir'+K,'Mirrors before you signal and before you turn, every time.');
+          if(R&&c.lookRAgo>6) fault('attention','No shoulder check to the right before turning right','minor','shr'+K,'Before a right turn, look over your right shoulder for cyclists and mopeds coming up beside you.');
+        }
+        if(Math.abs(e.angle)>1.0&&Math.abs(d)<6&&kmh>30) fault('speed',`Too fast through the ${e.dir} turn`,'minor','tsp'+K,'Slow down before the junction so you can turn smoothly and see what is there.');
+        if(e.ctrl==='stop'){ if(d<15&&d>0) e.minV=Math.min(e.minV==null?99:e.minV,c.v); if(cross(e.s-1)&&(e.minV==null?99:e.minV)>0.6) fault('rules','Did not stop at the stop sign','serious','stop'+K,'At a stop sign you must stop completely at the line, even if the road looks clear.'); }
+        if(e.ctrl==='right'){
+          if(cross(e.s-15)&&kmh>32) fault('speed','Too fast into an unmarked junction','minor','rsp'+K,'At junctions without signs, traffic from the right has priority. Arrive slowly enough to stop.');
+          if(e.spawnRight&&!this.noScripted&&e.dir!=='right'&&!e.spawned&&d<70&&d>25){ e.spawned=true; this.spawnRight(e); }
+        }
+        if(['give_way','stop','yield','right'].includes(e.ctrl)&&cross(e.s-3)&&this.conflictAt(e)){
+          if(e.ctrl==='right') fault('rules','Did not give way to traffic from the right (högerregeln)','serious','gw'+K,'Junctions without signs: give way to vehicles coming from your right. Look right early and slow down.');
+          else fault('rules','Did not give way at the junction','serious','gw'+K,e.assumed?'Coming out of a smaller road onto a bigger one you normally have to give way. Look for the sign and the line, and slow down early.':'A give-way sign or line means traffic on the other road goes first. Slow down early and look both ways.');
+        }
+      } else if(e.t==='node'&&e.m==='rb'){
+        if(e.ring&&e.oneLane&&cross(e.s-28)){
+          let msg='';
+          if(e.dir==='left'&&lat>-0.25) msg='Going left: keep to the left part of your lane, close to the centre line.';
+          if(e.dir==='right'&&lat<0.25) msg='Going right: keep to the right part of your lane.';
+          if(e.dir==='straight'&&Math.abs(lat)>1.05) msg='Going straight: keep to the middle of your lane.';
+          if(msg) fault('place','Wrong position in the lane for your exit','minor','rpos'+K,msg);
+        }
+        if(cross(e.s-14)&&e.n===1&&e.dir==='right'&&S.time-c.lastRight>1) fault('rules','No right signal on the way in for the 1st exit','minor','rin'+K,'Turning right at the first exit: signal right already on the approach.');
+        if(cross(e.s-12)){ if(kmh>42) fault('speed','Far too fast into the roundabout','serious','rsp'+K,'Slow down early so you can look left and stop if needed. Around 20 to 25 km/h at the line.'); else if(kmh>32) fault('speed','Too fast approaching the roundabout','minor','rsp'+K,'Slow down early so you can look left and stop if needed.'); }
+        if(e.spawnRing&&!this.noScripted&&!e.spawned&&d<80&&d>20&&d/Math.max(c.v,3)<4.5){ e.spawned=true; this.spawnRing(e); }
+        if(cross(e.s)){ const v=this.ringConflict(e.node,c,2); if(v&&v.v>1){ if(Math.hypot(v.x-c.x,v.y-c.y)<9) fault('interact','Entered right in front of a car already in the roundabout','intervention','ryI'+K); else fault('interact','Did not give way to traffic already in the roundabout','serious','ry'+K,'Traffic in the roundabout comes from your left and has priority. Look left early and arrive slowly enough to stop.'); } }
+        if(d<0&&e.out&&s<e.out.s&&kmh>32) fault('speed','Too fast in the roundabout','minor','rring'+K,'Around 20 to 30 km/h in a small roundabout.');
+      } else if(e.t==='rbx'){
+        if(cross(e.s-2.5)&&c.ind===1) fault('interact',`Signalled right before passing the ${ORD[e.idx]} exit, which is not yours`,'minor','rx'+K,'Signal right only after you pass the exit before yours, so drivers waiting there do not think you are leaving.');
+      } else if(e.t==='rbout'){
+        if(cross(e.s+3)&&S.time-c.lastRight>1.4) fault('rules','No right signal when leaving the roundabout','minor','rout'+K,'Always signal right before you leave, once you have passed the exit before yours.');
+      } else if(e.t==='light'){
+        if(cross(e.s)&&c.v>1.5){ const st=this.net.lightState(e.cl,e.grp,S.time);
+          if(st.st==='R'&&st.t>0.3) fault('rules','Drove against a red light','serious','red'+K,'Red means stop at the stop line. Watch the lights early so you can stop smoothly.');
+          else if(st.st==='Y'&&st.t>1.2) fault('predict','Drove through on amber although you could have stopped','minor','amb'+K,'Amber means stop if you can do it safely. Approach lights at a speed that lets you stop.'); }
+      } else if(e.t==='zebra'){
+        for(const p of S.peds){
+          if(p.ev!==e||p.state==='done') continue;
+          if(p.state==='cross'&&Math.abs(d)<2.2&&c.v>0.8){ const pl=(c.x-p.ox)*Math.sin(p.a)-(c.y-p.oy)*Math.cos(p.a); if(Math.abs(p.lat-pl)<4.5) fault('rules','Did not stop for a pedestrian on the zebra crossing','serious','zb'+K,'At a zebra crossing you must let pedestrians cross who are on it or about to step onto it. Look at the pavements early.'); }
+          if(d>0&&d<25&&kmh>32) fault('speed','Too fast towards a zebra crossing with a pedestrian next to it','minor','zbs'+K,'When someone is at a zebra crossing, slow down early so you can stop.');
+        }
+      }
+    }
+    // bus leaving its stop
+    const e=this.busEv;
+    if(e&&!S.ended){
+      const d=e.s-s;
+      if(!e.bus&&d<160&&d>60){ const b=mkVeh({path:this.path,s:e.s-6,lat:3.0,v:0,vDes:0,kind:'bus',len:12,wid:2.55,color:'#c8102e',parked:true,accel:1.3}); b.script=(v,t,dt)=>{v.lat+=(0-v.lat)*Math.min(1,dt*0.8);return t;}; S.ai.push(b); e.bus=b; }
+      const b=e.bus;
+      if(b&&!b.done){
+        if(!e.sig&&d<70){ e.sig=true; b.ind=-1; }
+        if(!e.go&&d<42){ e.go=true; b.parked=false; b.vDes=Math.min(11,e.lim/3.6); }
+        if(e.go&&!e.chk){ const r=rel(b); if(r.f<0&&r.f>-14&&b.v<9&&Math.abs(r.l)<4.5){ e.chk=true; fault('rules','Did not let the bus pull out from the stop','serious','bus'+e.key,'Where the limit is 50 km/h or lower you must let a bus leave the stop when it signals.'); } }
+        if(b.v>6) b.ind=0;
+      }
+    }
+  },
+  /* an AI vehicle that will reach the junction within ~3 s, and that the player had to give way to */
+  conflictAt(e){
+    const c=S.car;
+    for(const v of S.ai){
+      if(v.done||!v.jn||v.v<1.2) continue;
+      const j=v.jn.find(j=>j.node===e.node&&j.s>v.s-1); if(!j) continue;
+      const dd=j.s-v.s; if(dd>32||dd/v.v>3.2) continue;
+      if(Math.abs(angDiff(v.h,c.h))<0.6) continue;
+      if(e.ctrl==='right'&&(e.dir==='right'||!(rel(v).l>2))) continue;   // högerregeln: only traffic from the right that crosses your path
+      return v;
+    }
+    return null;
+  },
+  /* a vehicle in the roundabout that reaches this entry node within maxT seconds */
+  ringConflict(node,self,maxT){
+    const N=this.net.nodes[node];
+    for(const o of S.ai.concat([S.car])){
+      if(o===self||o.done||o.parked) continue;
+      const dx=N.x-o.x, dy=N.y-o.y, d=Math.hypot(dx,dy); if(d>24) continue;
+      const onRb=o===S.car?!!(this.near&&this.near.way.rb):!!(o.path&&o.path.pts[idxAt(o.path,o.s)].rb);
+      if(!onRb||(o!==S.car&&o.v<0.8)) continue;
+      if(dx*Math.sin(o.h)-dy*Math.cos(o.h)<-2) continue;
+      if(d>6&&d/Math.max(o.v,0.5)>(maxT||2.5)) continue;
+      return o;
+    }
+    return null;
+  },
+  /* one AI car at a time through an unsignalled junction; 30 s safety valve against deadlocks */
+  reserve(node,v){ const r=this.res.get(node); if(!r||r.v===v||r.v.done||S.time-r.t>30){ this.res.set(node,{v,t:r&&r.v===v?r.t:S.time}); return true; } return false; },
+  release(node,v){ const r=this.res.get(node); if(r&&r.v===v) this.res.delete(node); },
+  /* ---- AI traffic ---- */
+  traffic(dt){
+    const c=S.car;
+    for(const v of S.ai) if(v.net&&!v.done&&Math.hypot(v.x-c.x,v.y-c.y)>340) v.done=true;
+    for(const [n,r] of this.res) if(r.v.done) this.res.delete(n);
+    this.spawnT-=dt; if(this.spawnT>0) return; this.spawnT=0.6;
+    if(S.ai.filter(v=>v.net&&!v.done).length<this.maxAI) this.spawnAI(150,280);
+  },
+  spawnAI(r0,r1){
+    const net=this.net, c=S.car, es=net.edgesNear(c.x,c.y,r1); if(!es.length) return null;
+    for(let t=0;t<8;t++){
+      const e=es[Math.floor(Math.random()*es.length)]; if(OL.tier(e.way.hw)<1&&Math.random()<0.85) continue;
+      const de=(!e.way.ow&&Math.random()<0.5)?2*e.i+1:2*e.i, sd=Math.random()*e.len, p=net.pointAt(de,sd), d=Math.hypot(p.x-c.x,p.y-c.y);
+      if(d<r0||d>r1) continue;
+      if(S.ai.some(v=>!v.done&&Math.hypot(v.x-p.x,v.y-p.y)<25)) continue;
+      const v=this.mkAI(net.randomWalk(de,900+sd,Math.random),sd); if(v){ S.ai.push(v); return v; }
+    }
+    return null;
+  },
+  mkAI(des,s0,o){
+    const net=this.net, pp=net.pathPoints(des,s0); if(pp.pts.length<3) return null;
+    const path=finalize(pp.pts); path.pts.forEach((p,i)=>{ p.rb=pp.pts[i].rb; p.lim=OL.wayLimit(FD.ways[pp.pts[i].w]); });
+    const jn=[];
+    for(let k=0;k<des.length-1;k++){
+      const n=net.to(des[k]), a=net.rb(des[k]), b=net.rb(des[k+1]); if(net.deg[n]<3&&a===b) continue;
+      jn.push({node:n,s:path.pts[pp.ends[k]].s,entry:!a&&b,inRb:a,sig:net.lightNode.has(n)});
+    }
+    const lt=net.events(des,s0,pp.ends).filter(e=>e.t==='light').map(e=>({cl:e.cl,grp:e.grp,s:project(path,e.x,e.y,e.pi).s}));
+    const lim=path.pts[0].lim/3.6;
+    const v=mkVeh(Object.assign({path,s:0,v:lim*0.8,vDes:lim,net:true,ownFollow:true,jn,lt,drv:0.9+Math.random()*0.15},o||{}));
+    v.script=(vv,t,dt)=>this.aiDrive(vv,t,dt);
+    return v;
+  },
+  aiDrive(v,target,dt){
+    const c=S.car, path=v.path, net=this.net;
+    let t=Math.min(path.pts[idxAt(path,v.s)].lim/3.6*v.drv,v.assert?v.vDes:99);
+    for(const dd of [4,10,18,28]){ const k=Math.abs(at(path,v.s+dd).k); if(k>0.01){ const vc=Math.sqrt(2.8/k); t=Math.min(t,Math.sqrt(vc*vc+4.4*Math.max(0,dd-3))); } }
+    const stopAt=d=>Math.sqrt(Math.max(0,6.4*(d-0.5)));
+    for(const L of v.lt){ const d=L.s-v.s; if(d<-1||d>70) continue; const st=net.lightState(L.cl,L.grp,S.time).st; if(st==='G') continue; if(st==='R'||d>v.v*v.v/7+2) t=Math.min(t,stopAt(d-1)); }
+    for(const j of v.jn){
+      const d=j.s-v.s; if(d>45) continue;
+      if(d<-6){ this.release(j.node,v); continue; }
+      if(j.inRb) continue;
+      const N=net.nodes[j.node];
+      if(j.entry){ if(d>0&&this.ringConflict(j.node,v)) t=Math.min(t,stopAt(d-4)); continue; }
+      if(j.sig||v.assert) continue;
+      if(d<8){ this.reserve(j.node,v); continue; }                                             // already in the junction: clear it
+      const dp=Math.hypot(c.x-N.x,c.y-N.y), towards=(N.x-c.x)*Math.sin(c.h)-(N.y-c.y)*Math.cos(c.h)>0;
+      if(d>1&&dp<22&&towards&&c.v>0.8&&Math.abs(angDiff(v.h,c.h))>0.5){ t=Math.min(t,stopAt(d-10)); continue; } // let the player go first
+      if(d<Math.max(20,v.v*v.v/5+8)){
+        const queued=S.ai.some(o=>{ if(o===v||o.done) return false; const q=relTo(v,o); return q.f>0&&q.f<d&&Math.abs(q.l)<2&&Math.abs(angDiff(v.h,o.h))<0.6; });
+        if(queued||!this.reserve(j.node,v)) t=Math.min(t,stopAt(d-10));
+      }
+    }
+    for(const p of S.peds){ if(p.state!=='cross') continue; const r=relTo(v,p); if(r.f>1&&r.f<22&&Math.abs(r.l)<3.2) t=Math.min(t,stopAt(r.f-3.5)); }
+    // Follow whatever is on our own path ahead (works through turns, unlike a heading cone), and never drive
+    // into the player: stop short of any point of the path that the player covers now or within a second.
+    const look=Math.max(20,v.v*v.v/6+12), Q=[];
+    for(let dd=2;dd<=look;dd+=2) Q.push([dd,at(path,v.s+dd)]);
+    for(const o of S.ai.concat([c])){
+      if(o===v||o.done||Math.abs(o.x-v.x)>look+8||Math.abs(o.y-v.y)>look+8) continue;
+      const pl=o===c, fx=pl?Math.sin(o.h)*o.v:0, fy=pl?-Math.cos(o.h)*o.v:0, rad=o.kind==='bus'?2.6:pl?2.3:2.0;
+      for(const [dd,q] of Q){
+        let hit=false; for(const k of pl?[0,0.5,1]:[0]) if(Math.hypot(q.x-o.x-fx*k,q.y-o.y-fy*k)<rad) hit=true;
+        if(!hit) continue;
+        const along=Math.max(0,o.v*Math.cos(angDiff(o.h,v.h))), gap=dd-(o.len+v.len)/2;
+        t=Math.min(t,pl?Math.min(stopAt(dd-5.5),along+Math.max(0,gap-3)/1.3):Math.max(0,along+(gap-3)/1.3));
+        break;
+      }
+    }
+    return t;
+  },
+  /* a car already in the roundabout, timed to meet the player at the entry */
+  spawnRing(e){
+    const net=this.net, c=S.car, T=(e.s-this.ps)/Math.max(c.v,3);
+    let need=7*T; const first=net.inc[e.node].find(d=>net.rb(d)); if(first==null) return;
+    const chain=[first];
+    while(need>net.len(chain[0])&&chain.length<6){ const p=net.inc[net.from(chain[0])].find(d=>net.rb(d)); if(p==null) break; need-=net.len(chain[0]); chain.unshift(p); }
+    const s0=Math.max(0,net.len(chain[0])-need), des=chain.slice(0,-1).concat(net.randomWalk(chain[chain.length-1],400,Math.random));
+    const v=this.mkAI(des,s0,{assert:true,v:7,vDes:7.5}); if(v&&Math.hypot(v.x-c.x,v.y-c.y)>10){ S.ai.push(v); this.specials++; }
+  },
+  /* a car from the right at an unmarked junction */
+  spawnRight(e){
+    const net=this.net, c=S.car, pde=this.de[e.k], T=(e.s-this.ps)/Math.max(c.v,4);
+    const cand=net.inc[e.node].filter(d=>(d>>1)!==(pde>>1)&&!net.rb(d)&&OL.tier(net.way(d).hw)>=1).filter(d=>{ const a=angDiff(net.hIn(d),net.hIn(pde)); return a>-2.4&&a<-0.7; });
+    if(!cand.length) return;
+    const d0=cand[0], s0=Math.max(0,net.len(d0)-Math.max(6,8*T-4));
+    const v=this.mkAI(net.randomWalk(d0,500,Math.random),s0,{assert:true,v:8,vDes:8.3}); if(v){ S.ai.push(v); this.specials++; }
+  },
+  /* ---- scenery ---- */
+  prepScenery(){
+    const key=this.route.id+'|'+this.route.de.length; if(this.scKey===key) return; this.scKey=key;
+    const cell=60, cor=new Set(), P=this.path.pts;
+    for(let i=0;i<P.length;i+=10){ const cx=Math.floor(P[i].x/cell), cy=Math.floor(P[i].y/cell); for(let a=-5;a<=5;a++) for(let b=-5;b<=5;b++) cor.add((cx+a)+','+(cy+b)); }
+    const inC=(x,y)=>cor.has(Math.floor(x/cell)+','+Math.floor(y/cell));
+    this.bldNear=this.bld.filter(b=>inC(b.cx,b.cy));
+    this.signs=FD.signs.filter(sg=>inC(sg.x,sg.y));
+    this.headsNear=this.heads.filter(h=>inC(h.x,h.y));
+    let seed=97; const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647;};
+    const greens=['#2f4a2c','#3a5634','#2b4229','#41603a'], trees=[];
+    for(const k of cor){
+      const [cx,cy]=k.split(',').map(Number);
+      for(let i=0;i<5&&trees.length<4000;i++){
+        const x=(cx+rnd())*cell, y=(cy+rnd())*cell, nr=this.net.nearest(x,y,12);
+        if(nr&&nr.d<nr.half+4) continue;
+        const bl=this.bgrid.get(Math.floor(x/40)+','+Math.floor(y/40)); if(bl&&bl.some(b=>x>b.bb[0]-3&&x<b.bb[2]+3&&y>b.bb[1]-3&&y<b.bb[3]+3)) continue;
+        trees.push({x,y,r:1.8+rnd()*2,c:greens[Math.floor(rnd()*greens.length)]});
+      }
+    }
+    this.trees=trees;
+  },
+  draw(g){
+    const c=S.car, R=330, es=this.net.edgesNear(c.x,c.y,R), far=(x,y,m)=>Math.abs(x-c.x)>R+m||Math.abs(y-c.y)>R+m;
+    g.lineCap='round'; g.lineJoin='round';
+    for(const t of this.trees||[]){ if(far(t.x,t.y,5)) continue; g.fillStyle=t.c; g.beginPath(); g.arc(t.x,t.y,t.r,0,TAU); g.fill(); }
+    g.fillStyle='#b4ab9c'; g.strokeStyle='#8f877a'; g.lineWidth=0.3;
+    for(const b of this.bld){ if(far(b.cx,b.cy,60)) continue; g.beginPath(); for(const p of b.pts) g.lineTo(p[0],p[1]); g.closePath(); g.fill(); g.stroke(); }
+    const poly=(pts)=>{ g.beginPath(); g.moveTo(pts[0][0],pts[0][1]); for(let i=1;i<pts.length;i++) g.lineTo(pts[i][0],pts[i][1]); };
+    g.strokeStyle='#8d918b'; for(const e of es){ if(OL.tier(e.way.hw)<1) continue; g.lineWidth=e.way.w+2.6; poly(e.pts); g.stroke(); }
+    g.strokeStyle=ASPH; for(const e of es){ g.lineWidth=e.way.w; poly(e.pts); g.stroke(); }
+    g.strokeStyle=LINE;
+    for(const e of es){
+      const w=e.way; if(w.rb||OL.tier(w.hw)<1||e.len<26) continue;
+      if(!w.ow&&w.w>=5) this.lineOff(g,e,0,0.15,[3,9]);
+      if(w.ow&&w.ln>1) for(let i=1;i<w.ln;i++) this.lineOff(g,e,-w.w/2+i*w.w/w.ln,0.15,[3,9]);
+      if(OL.tier(w.hw)>=3) { this.lineOff(g,e,w.w/2-0.3,0.12,[1,2]); this.lineOff(g,e,-w.w/2+0.3,0.12,[1,2]); }
+    }
+    g.setLineDash([]); g.lineCap='butt';
+    g.fillStyle=LINE;
+    for(const z of this.zebras){ if(far(z.x,z.y,10)) continue; g.save(); g.translate(z.x,z.y); g.rotate(Math.atan2(z.ty,z.tx)); for(let y=-z.w/2+0.25;y<z.w/2-0.2;y+=1.0) g.fillRect(-1.5,y,3,0.5); g.restore(); }
+    for(const t of this.teeth){ if(far(t.x,t.y,10)) continue; g.save(); g.translate(t.x,t.y); g.rotate(Math.atan2(t.ty,t.tx)); const y0=t.ow?-t.half:0.1;
+      if(t.stop) g.fillRect(-0.5,y0,0.5,t.half-y0);
+      else { g.beginPath(); for(let y=y0;y<t.half-0.4;y+=0.75){ g.moveTo(0,y); g.lineTo(0,y+0.6); g.lineTo(-1.0,y+0.3); g.closePath(); } g.fill(); }
+      g.restore(); }
+    for(const h of this.heads){ if(far(h.x,h.y,10)) continue; g.save(); g.translate(h.sx,h.sy); g.rotate(Math.atan2(h.ty,h.tx)); g.fillRect(-0.35,h.ow?-h.half:0.1,0.35,h.ow?h.half*2:h.half-0.1); g.restore(); }
+  },
+  lineOff(g,e,off,width,dash){
+    const pts=e.pts, n=pts.length, s0=12, s1=e.len-12; if(s1<=s0) return;
+    g.lineWidth=width; g.setLineDash(dash||[]); g.beginPath(); let started=false;
+    for(let i=0;i<n;i++){
+      const s=e.cum[i]; if(s<s0||s>s1) continue;
+      const a=pts[Math.max(0,i-1)], b=pts[Math.min(n-1,i+1)], L=Math.hypot(b[0]-a[0],b[1]-a[1])||1, x=pts[i][0]-(b[1]-a[1])/L*off, y=pts[i][1]+(b[0]-a[0])/L*off;
+      if(!started){ g.moveTo(x,y); started=true; } else g.lineTo(x,y);
+    }
+    if(started) g.stroke();
+  },
+  drawDyn(g){
+    const c=S.car;
+    for(const h of this.heads){ if(Math.abs(h.x-c.x)>200||Math.abs(h.y-c.y)>200) continue; const st=this.net.lightState(h.cl,h.grp,S.time).st;
+      g.fillStyle='#16191c'; g.fillRect(h.x-0.6,h.y-0.6,1.2,1.2); g.fillStyle=st==='G'?'#2aff6a':st==='Y'?'#ffb000':'#ff2a2a'; g.beginPath(); g.arc(h.x,h.y,0.5,0,TAU); g.fill(); }
+  },
+  build3D(w){
+    const T=THREE;
+    if(this.bldNear&&this.bldNear.length){
+      const pos=[],nor=[],col=[],cl=new T.Color(),WALL=['#cfc6b6','#b9a48c','#d8d2c4','#a66a50','#e2dccf','#9c8f80'],ROOF='#5d5a57';
+      const push=(x,y,z,nx,ny,nz)=>{ pos.push(x,y,z); nor.push(nx,ny,nz); col.push(cl.r,cl.g,cl.b); };
+      this.bldNear.forEach((b,bi)=>{
+        const h=b.lv*3+0.4, P=b.pts, n=P.length;
+        cl.set(WALL[bi%WALL.length]);
+        for(let i=0;i<n;i++){ const [x0,y0]=P[i],[x1,y1]=P[(i+1)%n], L=Math.hypot(x1-x0,y1-y0)||1, nx=(y1-y0)/L, nz=-(x1-x0)/L;
+          push(x0,0,y0,nx,0,nz); push(x1,0,y1,nx,0,nz); push(x1,h,y1,nx,0,nz); push(x0,0,y0,nx,0,nz); push(x1,h,y1,nx,0,nz); push(x0,h,y0,nx,0,nz); }
+        cl.set(ROOF);
+        let tris=[]; try{ tris=T.ShapeUtils.triangulateShape(P.map(p=>new T.Vector2(p[0],p[1])),[]); }catch(e){}
+        for(const t of tris) for(const k of t) push(P[k][0],h,P[k][1],0,1,0);
+      });
+      const geo=new T.BufferGeometry();
+      geo.setAttribute('position',new T.Float32BufferAttribute(pos,3)); geo.setAttribute('normal',new T.Float32BufferAttribute(nor,3)); geo.setAttribute('color',new T.Float32BufferAttribute(col,3));
+      w.add(new T.Mesh(geo,new T.MeshLambertMaterial({vertexColors:true,side:DS})));
+    }
+    this.lampMats=new Map();
+    const pole=lam('#4a4d52'), box=lam('#1b1d20');
+    for(const h of this.headsNear||[]){
+      const key=h.cl+':'+h.grp; let m=this.lampMats.get(key);
+      if(!m){ m={r:new T.MeshBasicMaterial({color:'#3a1010'}),y:new T.MeshBasicMaterial({color:'#3a2a08'}),g:new T.MeshBasicMaterial({color:'#0c3018'}),st:''}; this.lampMats.set(key,m); }
+      const p=new T.Mesh(CYLG,pole); p.scale.set(0.06,3.3,0.06); p.position.set(h.x,1.65,h.y); w.add(p);
+      const b=new T.Mesh(BOXG,box); b.scale.set(0.36,1.05,0.3); b.position.set(h.x,2.9,h.y); b.rotation.y=-Math.atan2(h.tx,-h.ty); w.add(b);
+      [[m.r,3.22],[m.y,2.9],[m.g,2.58]].forEach(([mt,y])=>{ const s=new T.Mesh(SPHG,mt); s.scale.setScalar(0.12); s.position.set(h.x-h.tx*0.17,y,h.y-h.ty*0.17); w.add(s); });
+    }
+  },
+  sync3D(){
+    if(!this.lampMats) return;
+    for(const [k,m] of this.lampMats){ const [cl,grp]=k.split(':').map(Number), st=this.net.lightState(cl,grp,S.time).st; if(m.st===st) continue; m.st=st;
+      m.r.color.set(st==='R'?'#ff2a2a':'#3a1010'); m.y.color.set(st==='Y'?'#ffb000':'#3a2a08'); m.g.color.set(st==='G'?'#2aff6a':'#0c3018'); }
+  }
+};
 const LEVELS={roundabout:RB,highway:HW,country:CR};
+if(FD&&OL&&FD.routes) LEVELS.farsta=OSM;
 
 function line(g,x0,y0,x1,y1){g.beginPath();g.moveTo(x0,y0);g.lineTo(x1,y1);g.stroke();}
 function strokeOff(g,path,off,width,color,dash,from,to,filter){
@@ -548,6 +956,7 @@ function drawSignFace(g,sg,R,d){
   }
   else if(sg.type==='mw'||sg.type==='town'){ g.font=`700 ${R*0.62}px Overpass, sans-serif`; const w=g.measureText(sg.val).width+R*0.8; g.fillStyle=sg.type==='mw'?'#1f5fa8':'#1f5fa8'; rr(g,-w/2,-R*0.6,w,R*1.2,R*0.18); g.fill(); g.strokeStyle='#fff'; g.lineWidth=1.5*d; rr(g,-w/2+3*d,-R*0.6+3*d,w-6*d,R*1.2-6*d,R*0.12); g.stroke(); g.fillStyle='#fff'; g.fillText(sg.val,0,R*0.04); }
   else if(sg.type==='rb'){ g.fillStyle='#1f5fa8'; g.beginPath(); g.arc(0,0,R,0,TAU); g.fill(); g.strokeStyle='#fff'; g.lineWidth=2.5*d; g.beginPath(); g.arc(0,0,R*0.5,0.3,TAU-0.6); g.stroke(); }
+  else if(sg.type==='stop'){ g.fillStyle='#fff'; g.beginPath(); for(let i=0;i<8;i++){const a=Math.PI/8+i*Math.PI/4; g.lineTo(Math.cos(a)*R*1.02,Math.sin(a)*R*1.02);} g.closePath(); g.fill(); g.fillStyle='#c8102e'; g.beginPath(); for(let i=0;i<8;i++){const a=Math.PI/8+i*Math.PI/4; g.lineTo(Math.cos(a)*R*0.92,Math.sin(a)*R*0.92);} g.closePath(); g.fill(); g.fillStyle='#fff'; g.font=`800 ${R*0.55}px Overpass, sans-serif`; g.fillText('STOP',0,R*0.05); }
   else if(sg.type==='bus'||sg.type==='zebra'){ g.fillStyle='#1f5fa8'; rr(g,-R*0.85,-R*0.85,R*1.7,R*1.7,R*0.15); g.fill(); g.fillStyle='#fff'; g.font=`800 ${R*(sg.type==='bus'?0.5:0.9)}px Overpass, sans-serif`; g.fillText(sg.type==='bus'?'BUSS':'▲',0,R*0.04); }
 }
 function render(){
@@ -559,7 +968,8 @@ function render(){
   S.zoom+=(target-S.zoom)*(S.zoomInit?0.04:1); S.zoomInit=true;
   g.translate(W/2,H*0.72); g.rotate(-c.h); g.scale(S.zoom,S.zoom); g.translate(-c.x,-c.y);
   lv.draw(g);
-  for(const sg of lv.signs) drawSign(g,sg);
+  for(const sg of lv.signs) if(Math.abs(sg.x-c.x)<260&&Math.abs(sg.y-c.y)<260) drawSign(g,sg);
+  if(lv.drawDyn) lv.drawDyn(g);
   for(const p of S.peds){ if(p.state==='done') continue; const r=Math.max(0.42,5*S.dpr/S.zoom); g.fillStyle='#2b2f3a'; g.beginPath(); g.arc(p.x,p.y,r,0,TAU); g.fill(); g.fillStyle='#f4c514'; g.beginPath(); g.arc(p.x,p.y,r*0.55,0,TAU); g.fill(); }
   for(const v of S.ai){ if(v.done) continue; if(Math.abs(v.x-c.x)>220||Math.abs(v.y-c.y)>220) continue; const a=visibility(v); if(a>0) drawVeh(g,v,a); }
   drawVeh(g,c,1);
@@ -586,7 +996,8 @@ function init3D(){
     BOXG=new T.BoxGeometry(1,1,1); CONEG=new T.ConeGeometry(1,1,8); CYLG=new T.CylinderGeometry(1,1,1,8); SPHG=new T.SphereGeometry(1,10,8);
     ROOFG=new T.ConeGeometry(1,1,4); ROOFG.rotateY(Math.PI/4);
     V3.ground=new T.Mesh(new T.PlaneGeometry(6000,6000),new T.MeshBasicMaterial({color:'#5b7150',side:DS}));
-    V3.ground.rotation.x=-Math.PI/2; V3.ground.position.y=-0.05; sc.add(V3.ground);
+    // drawn first and without depth, so the textured road plane above it never loses a depth fight
+    V3.ground.rotation.x=-Math.PI/2; V3.ground.position.y=-0.05; V3.ground.renderOrder=-1; V3.ground.material.depthWrite=false; sc.add(V3.ground);
     V3.tc=document.createElement('canvas'); V3.tc.width=V3.tc.height=TEX; V3.tg=V3.tc.getContext('2d');
     V3.tex=new T.CanvasTexture(V3.tc); V3.tex.anisotropy=r.capabilities.getMaxAnisotropy();
     V3.gplane=new T.Mesh(new T.PlaneGeometry(GW,GW),new T.MeshBasicMaterial({map:V3.tex,side:DS}));
@@ -597,6 +1008,7 @@ function init3D(){
     V3.rt={rear:new T.WebGLRenderTarget(512,160),left:new T.WebGLRenderTarget(256,170),right:new T.WebGLRenderTarget(256,170)};
     V3.hudCv=document.createElement('canvas'); V3.hudCv.width=512; V3.hudCv.height=256; V3.hudCtx=V3.hudCv.getContext('2d');
     V3.hudTex=new T.CanvasTexture(V3.hudCv);
+    V3.signMat=new Map();
     V3.posOff=new T.Vector3(); V3.yawOff=0; V3.prev={}; V3.frames=0; V3.hudT=0; V3.mirrorPlanes=[];
     r.xr.enabled=true;
     V3.ok=true; return true;
@@ -611,13 +1023,13 @@ function build3D(){
   let seed=11; const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647;};
   const greens=['#2f4a2c','#3a5634','#2b4229'];
   let trees=[];
-  if(lv===CR) trees=lv.trees.map(t=>({x:t.x,y:t.y,r:t.r*0.75,c:t.c}));
+  if(lv.trees) trees=lv.trees.map(t=>({x:t.x,y:t.y,r:t.r*0.75,c:t.c}));
   else if(lv===RB){
     for(let i=0;i<260;i++){ const x=(rnd()*2-1)*125,y=(rnd()*2-1)*135; if(Math.abs(x)<11||Math.abs(y)<11||Math.hypot(x,y)<30) continue; trees.push({x,y,r:1.5+rnd()*1.8,c:pick(greens)}); }
     for(let i=0;i<4;i++){ const a=i*TAU/4+0.6; trees.push({x:Math.cos(a)*5.5,y:Math.sin(a)*5.5,r:0.9,c:'#3a5634'}); }
     const isl=new T.Mesh(CYLG,lam('#4d6b43')); isl.scale.set(RB.rIn,0.3,RB.rIn); isl.position.y=0.15; w.add(isl);
     const kerb=new T.Mesh(CYLG,lam('#8a8780')); kerb.scale.set(RB.rIn+1.4,0.14,RB.rIn+1.4); kerb.position.y=0.07; w.add(kerb);
-  } else {
+  } else if(lv===HW){
     for(let y=330;y>-2600;y-=12){ trees.push({x:-13-rnd()*28,y:y+rnd()*8,r:1.6+rnd()*2,c:pick(greens)}); if(y>-1320) trees.push({x:13+rnd()*28,y:y+rnd()*8,r:1.6+rnd()*2,c:pick(greens)}); }
     const rail=new T.Mesh(BOXG,lam('#a7acb1')); rail.scale.set(0.12,0.32,3000); rail.position.set(-5.5,0.65,-1100); w.add(rail);
   }
@@ -630,12 +1042,14 @@ function build3D(){
     const hc=['#8e2b23','#8e2b23','#e9e4da','#c9a64a'];
     lv.houses.forEach((h,i)=>{ const g2=new T.Group(); const b=new T.Mesh(BOXG,lam(hc[i%hc.length])); b.scale.set(h.w,3,h.d); b.position.y=1.5; const rf=new T.Mesh(ROOFG,lam('#3a3d42')); rf.scale.set(h.w/1.414*1.1,2.2,h.d/1.414*1.1); rf.position.y=4.1; g2.add(b,rf); g2.position.set(h.x,0,h.y); g2.rotation.y=-h.h; w.add(g2); });
   }
+  if(lv.build3D) lv.build3D(w);
   const postMat=lam('#6d6f72');
   for(const sg of lv.signs){
-    const big=sg.type==='mw'||sg.type==='town', top=big?2.7:2.0;
+    const big=sg.type==='mw'||sg.type==='town', top=big?2.7:2.0, key=sg.type+'|'+sg.val;
     const post=new T.Mesh(CYLG,postMat); post.scale.set(0.045,top,0.045); post.position.set(sg.x,top/2,sg.y); w.add(post);
-    const cvs=document.createElement('canvas'); cvs.width=cvs.height=256; const sgc=cvs.getContext('2d'); sgc.translate(128,128); drawSignFace(sgc,sg,46,2.7);
-    const sp=new T.Sprite(new T.SpriteMaterial({map:new T.CanvasTexture(cvs),side:DS})); const sz=big?4:2.5; sp.scale.set(sz,sz,1); sp.position.set(sg.x,top+(big?0.35:0.3),sg.y); w.add(sp);
+    let sm=V3.signMat.get(key);
+    if(!sm){ const cvs=document.createElement('canvas'); cvs.width=cvs.height=256; const sgc=cvs.getContext('2d'); sgc.translate(128,128); drawSignFace(sgc,sg,46,2.7); sm=new T.SpriteMaterial({map:new T.CanvasTexture(cvs),side:DS}); V3.signMat.set(key,sm); }
+    const sp=new T.Sprite(sm); const sz=big?4:2.5; sp.scale.set(sz,sz,1); sp.position.set(sg.x,top+(big?0.35:0.3),sg.y); w.add(sp);
   }
   for(const [,m] of V3.dyn) V3.scene.remove(m); V3.dyn.clear();
   for(const [,m] of V3.peds) V3.scene.remove(m); V3.peds.clear();
@@ -703,7 +1117,8 @@ function syncDyn(){
     const a=(S.view==='chase'&&v!==S.car)?visibility(v):1;
     if(a!==ud.a){ ud.a=a; m.visible=a>0; ud.mats.forEach(mt=>{mt.transparent=a<1; mt.opacity=a; mt.needsUpdate=true;}); }
   }
-  for(const [v,m] of V3.dyn) if(!seen.has(v)){ V3.scene.remove(m); V3.dyn.delete(v); }
+  for(const [v,m] of V3.dyn) if(!seen.has(v)){ V3.scene.remove(m); V3.dyn.delete(v); m.userData.mats.forEach(x=>x.dispose()); }
+  if(S.level.sync3D) S.level.sync3D();
   for(const p of S.peds){
     let m=V3.peds.get(p);
     if(p.state==='done'){ if(m){V3.scene.remove(m);V3.peds.delete(p);} continue; }
@@ -901,7 +1316,8 @@ function prepare(){
   const lv=LEVELS[S.lvlId]; S.level=lv;
   Object.assign(S,{faults:[],faultKeys:new Set(),time:0,running:false,paused:false,ended:false,intervened:false,hint:'',hintT:-99,toast:null,hintsDone:new Set(),zoomInit:false,keys:{}});
   overT=0;overST=0;hbT=0;
-  lv.init({exit:+$('#exitSel').value||0});
+  lv.init({exit:+$('#exitSel').value||0,route:$('#routeSel').value});
+  $('#exitField').hidden=S.lvlId!=='roundabout'; $('#routeField').hidden=S.lvlId!=='farsta'; $('#attrib').hidden=S.lvlId!=='farsta';
   S.headYaw=0; S.pitch=-0.02; S.camH=S.car.h;
   build3D();
   $('#banner').hidden=true;
@@ -911,14 +1327,15 @@ function prepare(){
 const BRIEF={
   roundabout:'A one-lane roundabout with zebra crossings on every arm. Approach at 40, pick the right spot in your lane for your exit, give way to the left, and signal right on the way out.',
   highway:'You start at 100 km/h in the right lane. A truck is ahead with a tight queue in front of it, and your exit comes up in about 1.4 km. Decide well, check before every lane change, and brake in the exit lane.',
-  country:'An 80 road through forest into a village. Bends, a cyclist, a car waiting at a side road and a bus at its stop. Read each situation before you reach it.'
+  country:'An 80 road through forest into a village. Bends, a cyclist, a car waiting at a side road and a bus at its stop. Read each situation before you reach it.',
+  farsta:()=>`The real streets around ${escapeHtml(FD.centre.name)}, from OpenStreetMap. <b>${escapeHtml(OSM.route.name)}</b>${OSM.route.desc?` (${escapeHtml(OSM.route.desc)})`:''}. You start at the test centre, standing still. Follow the directions at the top as you would the examiner's, and expect traffic lights, give-way rules and pedestrians.`
 };
 function showOverlay(kind){
   const ov=$('#overlay'),box=$('#overlayBox');
   if(kind==='hide'){ov.hidden=true;return;}
   ov.hidden=false;
   if(kind==='ready'){
-    box.innerHTML=`<h2>${S.level.title}</h2><p>${BRIEF[S.lvlId]}</p><p><b>${S.mode==='coach'?'Coach mode':'Test mode'}.</b> ${S.mode==='coach'?'Hints and faults show as you drive.':'No hints. The report comes at the end.'}</p><div class="row" style="justify-content:center"><button class="btn" id="goBtn">Start drive</button></div><p style="font-size:12px;opacity:.7">Keyboard: arrows to drive, Q/E signal, W mirrors, A/D shoulder checks. Or use the buttons below.</p>`;
+    box.innerHTML=`<h2>${S.level.title}</h2><p>${typeof BRIEF[S.lvlId]==='function'?BRIEF[S.lvlId]():BRIEF[S.lvlId]}</p><p><b>${S.mode==='coach'?'Coach mode':'Test mode'}.</b> ${S.mode==='coach'?'Hints and faults show as you drive.':'No hints. The report comes at the end.'}</p><div class="row" style="justify-content:center"><button class="btn" id="goBtn">Start drive</button></div><p style="font-size:12px;opacity:.7">Keyboard: arrows to drive, Q/E signal, W mirrors, A/D shoulder checks. Or use the buttons below.</p>`;
     $('#goBtn').onclick=startDrive;
   } else if(kind==='paused'){
     box.innerHTML=`<h2>Paused</h2><div class="row" style="justify-content:center"><button class="btn" id="resBtn">Resume</button><button class="btn ghost" id="rstBtn">Restart</button></div>`;
@@ -933,7 +1350,7 @@ function finish(){
   const pass=ser.length===0&&minors.length<=2;
   const w={}; f.forEach(x=>{w[x.cat]=(w[x.cat]||0)+(x.sev==='minor'?1:3);});
   let main=null; Object.keys(w).forEach(k=>{ if(!main||w[k]>w[main]||(w[k]===w[main]&&k==='predict')) main=k; });
-  P.drives.push({lvl:S.lvlId,mode:S.mode,pass,date:Date.now(),faults:f.map(x=>({cat:x.cat,sev:x.sev,text:x.text}))});
+  P.drives.push({lvl:S.lvlId,route:S.level.subtitle?S.level.subtitle():undefined,mode:S.mode,pass,date:Date.now(),faults:f.map(x=>({cat:x.cat,sev:x.sev,text:x.text}))});
   if(P.drives.length>80) P.drives.splice(0,P.drives.length-80);
   saveP();
   S.lastResult={pass,main};
@@ -942,12 +1359,13 @@ function finish(){
   const tips=[...new Set(f.map(x=>x.tip).filter(Boolean))];
   const d=new Date();
   let html=`<h2>Resultat från ditt körprov <span style="font-weight:400;color:var(--muted)">(övning)</span></h2>
-  <dl class="rtab"><dt>Provtyp</dt><dd>Körprov B, simulator</dd><dt>Scenario</dt><dd>${S.level.title}${S.lvlId==='roundabout'?`, ${ORD[RB.exit]} exit`:''}</dd><dt>Läge</dt><dd>${S.mode==='coach'?'Coach':'Test'}</dd><dt>Datum</dt><dd>${d.toLocaleDateString('sv-SE')} ${d.toLocaleTimeString('sv-SE',{hour:'2-digit',minute:'2-digit'})}</dd><dt>Resultat</dt><dd><span class="verdict ${pass?'pass':'fail'}">${pass?'Godkänd':'Underkänd'}</span></dd></dl>`;
+  <dl class="rtab"><dt>Provtyp</dt><dd>Körprov B, simulator</dd><dt>Scenario</dt><dd>${S.level.title}${S.lvlId==='roundabout'?`, ${ORD[RB.exit]} exit`:''}${S.level.subtitle?`, ${escapeHtml(S.level.subtitle())}`:''}</dd><dt>Läge</dt><dd>${S.mode==='coach'?'Coach':'Test'}</dd><dt>Datum</dt><dd>${d.toLocaleDateString('sv-SE')} ${d.toLocaleTimeString('sv-SE',{hour:'2-digit',minute:'2-digit'})}</dd><dt>Resultat</dt><dd><span class="verdict ${pass?'pass':'fail'}">${pass?'Godkänd':'Underkänd'}</span></dd></dl>`;
   if(!pass&&main) html+=`<div><p class="eyebrow">Huvudsaklig orsak / main reason</p><b style="font-size:16px">${CATS[main].en}</b> <span class="sv">(${CATS[main].sv})</span></div>`;
   if(iv) html+=`<p style="margin:0;font-weight:700;color:var(--bad)">Ingripande har skett. The examiner had to intervene.</p>`;
   if(!f.length) html+=`<p style="margin:0">Clean drive. No faults recorded. Try it in Test mode, or with a different exit.</p>`;
   for(const k of order){ if(!byCat[k]) continue; html+=`<div class="cat"><h3>${CATS[k].en} <span class="sv">${CATS[k].sv}</span></h3><ul>${byCat[k].map(x=>`<li><span class="sev ${x.sev}">${x.sev==='intervention'?'ingripande':x.sev}</span><span>${x.text}</span></li>`).join('')}</ul></div>`; }
   if(tips.length) html+=`<div class="tips"><b>Train next</b><ul>${tips.slice(0,5).map(t=>`<li>${t}</li>`).join('')}</ul></div>`;
+  if(S.lvlId==='farsta') html+=`<p class="note" style="margin:0">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors.</p>`;
   html+=`<div class="row"><button class="btn" id="again">Drive again</button><button class="btn ghost" id="closeRep">Close</button></div>`;
   $('#reportBody').innerHTML=html; $('#report').hidden=false;
   $('#again').onclick=()=>{$('#report').hidden=true; prepare(); startDrive();};
@@ -965,16 +1383,53 @@ function pollGamepad(){
     break; } }catch(e){}
 }
 function tick(dt){
-  S.time+=dt; stepCar(dt); updateAI(dt); updatePeds(dt);
+  S.time+=dt; if(S.auto) autoDrive(); stepCar(dt); updateAI(dt); updatePeds(dt);
   if(!S.intervened&&!S.ended){ S.level.step(dt); if(!S.ended){ genericChecks(dt); collisions(); } }
   if(S.ai.length>60) S.ai=S.ai.filter(v=>!v.done);
+}
+/* Test autopilot (only with ?test in the address): follows the route path of the Farsta level */
+function autoDrive(){
+  const lv=S.level, c=S.car; if(!lv.path) return;
+  const pr=project(lv.path,c.x,c.y,lv.hint), Ld=Math.max(4.5,c.v*0.8), q=at(lv.path,pr.s+Ld);
+  const err=angDiff(Math.atan2(q.x-c.x,-(q.y-c.y)),c.h), want=Math.atan(2*2.7*Math.sin(err)/Ld);
+  let vt=lv.checkLimit()/3.6*0.8;
+  for(let d=5;d<40;d+=5){ const k=Math.abs(at(lv.path,pr.s+d).k); if(k>0.01) vt=Math.min(vt,Math.sqrt(2.5/k)+d*0.15); }
+  const stopAt=d=>Math.sqrt(Math.max(0,5*(d-1)));
+  const look=Math.max(12,c.v*c.v/5+8);
+  for(const v of S.ai){
+    if(v.done||Math.hypot(v.x-c.x,v.y-c.y)>look+15) continue;
+    const fx=Math.sin(v.h)*v.v, fy=-Math.cos(v.h)*v.v;
+    scan: for(let dd=2;dd<=look;dd+=2){ const q=at(lv.path,pr.s+dd); for(const k of [0,0.5,1]) if(Math.hypot(q.x-v.x-fx*k,q.y-v.y-fy*k)<(v.kind==='bus'?3.0:2.4)){ vt=Math.min(vt,stopAt(dd-5)); break scan; } }
+  }
+  for(const e of lv.ev){
+    const d=e.s-pr.s; if(d<-15||d>45) continue;
+    if(d<0){ if(e.t==='node') vt=Math.min(vt,Math.abs(e.angle||0)>1.1&&d>-8?3:6.5); continue; }
+    if(e.t==='light'){ const st=lv.net.lightState(e.cl,e.grp,S.time); if(st.st==='R'||(st.st==='Y'&&d>c.v*c.v/8)) vt=Math.min(vt,stopAt(d)); }
+    if(e.t==='node'&&e.m==='rb'){ vt=Math.min(vt,6+d*0.25); if(d>2&&lv.ringConflict(e.node,c)) vt=Math.min(vt,stopAt(d-3)); }
+    if(e.t==='node'&&e.m==='turn'){
+      vt=Math.min(vt,(Math.abs(e.angle||0)>1.1?2.6:4)+d*0.2);
+      if(d<1) continue;
+      if(e.ctrl!=='signals'){ const N=lv.net.nodes[e.node];
+        const busy=S.ai.some(v=>{ if(v.done||!v.jn||Math.abs(angDiff(v.h,c.h))<0.6) return false; const j=v.jn.find(j=>j.node===e.node&&j.s>v.s-8); if(!j) return false; const dj=j.s-v.s; if(dj<4) return true; return e.ctrl!=='major'&&v.v>2&&dj/v.v<4; });
+        if(busy) vt=Math.min(vt,stopAt(d-7)); }
+    }
+    if(e.t==='zebra'&&S.peds.some(p=>p.ev===e&&p.state==='cross')) vt=Math.min(vt,stopAt(d-3));
+    if(e.t==='zebra'&&S.peds.some(p=>p.ev===e&&p.state!=='done')) vt=Math.min(vt,5.5+d*0.1);
+  }
+  // signals and checks like a careful driver
+  let sig=0; const nx=lv.nodes.find(e=>e.s>pr.s-4), inRb=lv.nodes.find(e=>e.m==='rb'&&e.s<pr.s&&e.out&&pr.s<e.out.s+2);
+  if(inRb) sig=lv.ev.some(x=>x.t==='rbx'&&x.s>pr.s-3&&x.s<inRb.out.s)?0:1;
+  else if(nx&&nx.s-pr.s<75){ sig=nx.m==='rb'?(nx.n===1&&nx.dir==='right'?1:0):nx.dir==='left'?-1:nx.dir==='right'?1:0; if(nx.s-pr.s<55){ c.mirrorAgo=0; if(sig===1) c.lookRAgo=0; } }
+  if(sig&&c.ind!==sig) toggleInd(sig); else if(!sig&&c.ind) toggleInd(c.ind);
+  if(inRb&&sig) c.mirrorAgo=0;
+  S.gp={st:clamp(want/(0.62/(1+c.v*0.22)),-1,1),thr:c.v<vt-0.4?0.7:0,brk:c.v>vt+0.3?clamp((c.v-vt)*0.25,0.1,0.6):0};
 }
 let last=null;
 function frame(ts){
   const now=(ts||performance.now())/1000; const dt=Math.min(0.05,last==null?0.016:Math.max(0,now-last)); last=now;
   if(V3.inXR) pollXR();
   if(S.tab!=='drive'&&!V3.inXR) return;
-  if(S.running&&!S.paused&&!S.ended){ if(!V3.inXR) pollGamepad(); tick(dt/2); tick(dt/2); }
+  if(S.running&&!S.paused&&!S.ended){ if(!V3.inXR) pollGamepad(); for(let i=0;i<(S.timeScale||1)&&!S.ended;i++){ tick(dt/2); tick(dt/2); } }
   if(V3.inXR) renderXR(dt); else if(S.view==='map'||!V3.ok) render(); else render3D(dt);
   updateHUD();
 }
@@ -1012,13 +1467,14 @@ document.querySelectorAll('#pad [data-tap]').forEach(b=>b.addEventListener('poin
 
 document.querySelectorAll('.scard').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('.scard').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'));
-  S.lvlId=b.dataset.lvl; $('#exitField').hidden=S.lvlId!=='roundabout'; $('#report').hidden=true; prepare();
+  S.lvlId=b.dataset.lvl; $('#report').hidden=true; prepare();
 }));
 document.querySelectorAll('#modeSeg button').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('#modeSeg button').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'));
   S.mode=b.dataset.mode; prepare();
 }));
 $('#exitSel').addEventListener('change',()=>prepare());
+$('#routeSel').addEventListener('change',()=>prepare());
 
 /* ---------- tabs ---------- */
 document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>{
@@ -1172,7 +1628,7 @@ function videoKey(e){
 let resetArmed=false;
 function renderProgress(){
   const body=$('#progBody'); const D=P.drives;
-  const lv={roundabout:'Roundabout',highway:'Motorway exit',country:'Country road'};
+  const lv={roundabout:'Roundabout',highway:'Motorway exit',country:'Country road'}; if(LEVELS.farsta) lv.farsta='Farsta (real roads)';
   const rows=Object.keys(lv).map(k=>{const ds=D.filter(d=>d.lvl===k); const last=ds[ds.length-1]; return `<tr><td>${lv[k]}</td><td class="n">${ds.length}</td><td class="n">${ds.filter(d=>d.pass).length}</td><td>${last?(last.pass?'<span class="verdict pass" style="font-size:11px">Godkänd</span>':'<span class="verdict fail" style="font-size:11px">Underkänd</span>'):'<span class="empty">Not driven</span>'}</td></tr>`;}).join('');
   const recent=D.slice(-10); const w={}; recent.forEach(d=>d.faults.forEach(f=>{w[f.cat]=(w[f.cat]||0)+(f.sev==='minor'?1:3);}));
   const maxW=Math.max(1,...Object.values(w));
@@ -1193,6 +1649,15 @@ function renderProgress(){
 }
 
 /* ---------- boot ---------- */
+const fCard=document.querySelector('.scard[data-lvl=farsta]');
+if(LEVELS.farsta){
+  $('#routeSel').innerHTML=FD.routes.map(r=>`<option value="${escapeHtml(r.id)}">${escapeHtml(r.name)}${r.desc?` (${escapeHtml(r.desc)})`:''}</option>`).join('')+'<option value="random">Random route from the test centre</option>';
+} else if(fCard){ fCard.disabled=true; fCard.querySelector('span:last-child').textContent='Map data not built yet. Run npm run osm to download it from OpenStreetMap (see README).'; }
+if(/[?&]test\b/.test(location.search)) window.FDL_TEST={
+  auto(on,scale,traffic){ S.auto=!!on; S.timeScale=scale||1; if(traffic===false&&S.level===OSM){ OSM.maxAI=0; OSM.noScripted=true; S.ai.forEach(v=>{v.done=true;}); } },
+  state(){ const lv=S.level; return {lvl:S.lvlId,running:S.running,ended:S.ended,time:S.time,faults:S.faults.map(f=>f.sev+': '+f.text),s:lv.ps,len:lv.path?lv.path.len:null,ai:S.ai.filter(v=>!v.done).length,peds:S.peds.length,instr:S.instr,route:lv.subtitle?lv.subtitle():null,reroutes:lv.reroutes||0}; },
+  near(){ const c=S.car; return {car:{x:c.x,y:c.y,h:c.h,v:c.v},ai:S.ai.filter(v=>!v.done&&Math.hypot(v.x-c.x,v.y-c.y)<40).map(v=>({x:v.x,y:v.y,h:v.h,v:v.v,s:v.s,kind:v.kind,assert:!!v.assert,parked:!!v.parked,rel:rel(v),jn:v.jn&&v.jn.map(j=>({n:j.node,d:j.s-v.s}))}))}; }
+};
 S.view='map';
 if(init3D()){ const sv=store.get('fdl:view','driver'); S.view=['driver','chase','map'].includes(sv)?sv:'driver'; }
 else { document.querySelectorAll('#viewSeg button').forEach(b=>{ if(b.dataset.view!=='map') b.disabled=true; }); }

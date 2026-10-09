@@ -1,0 +1,12 @@
+{
+  "comment": "Area and routes for the Farsta level. bbox is [south, west, north, east]. The origin of the local metre grid is the test centre, found in the OSM data by its address. fallback is used only if the address is missing from OSM (Farsta district centre, from Wikipedia). Add the routes your driving school says the examiners use under routes: each one is a name and a list of [lat, lon] waypoints, starting at the test centre.",
+  "bbox": [59.222, 18.050, 59.262, 18.145],
+  "centre": {
+    "name": "Trafikverket Förarprov Farsta",
+    "street": "Fryksdalsbacken",
+    "housenumber": "20",
+    "fallback": [59.2403, 18.0972]
+  },
+  "routeLength": [2500, 6000],
+  "routes": []
+}

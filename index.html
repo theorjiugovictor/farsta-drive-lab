@@ -35,6 +35,7 @@
             <button class="scard" data-lvl="roundabout" aria-pressed="true"><span class="sw">Cirkulationsplats</span><b>Roundabout</b><span>Lane position for your exit, giving way to the left, zebra crossings, signalling out.</span></button>
             <button class="scard" data-lvl="highway" aria-pressed="false"><span class="sw">Avfart motorväg</span><b>Motorway exit</b><span>A slow truck with a queue in front. Overtake or not, lane changes with checks, braking in the exit lane.</span></button>
             <button class="scard" data-lvl="country" aria-pressed="false"><span class="sw">Landsväg</span><b>Country road</b><span>Bends, a cyclist with oncoming traffic, a car at a side road, a bus leaving its stop.</span></button>
+            <button class="scard" data-lvl="farsta" aria-pressed="false"><span class="sw">Farsta provområde</span><b>Farsta (real roads)</b><span>The streets around the Trafikverket test centre, from OpenStreetMap. Pick a route and follow the directions.</span></button>
           </div>
         </div>
         <div>
@@ -69,6 +70,9 @@
             <dt>Head</dt><dd>Look into a mirror or over your shoulder to check</dd>
           </dl>
         </div>
+        <label class="field" id="routeField" hidden>Route
+          <select id="routeSel"></select>
+        </label>
         <label class="field" id="exitField">Roundabout exit
           <select id="exitSel"><option value="0">Random</option><option value="1">1st exit (right)</option><option value="2">2nd exit (straight)</option><option value="3">3rd exit (left)</option></select>
         </label>
@@ -110,6 +114,7 @@
             <div class="toast" id="toast" hidden></div>
             <div class="banner" id="banner" hidden>Examiner intervened<br><small>Ingripande</small></div>
           </div>
+          <div class="attrib" id="attrib" hidden>© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors</div>
           <div class="overlay" id="overlay"><div class="box" id="overlayBox"></div></div>
         </div>
         <div class="pad" id="pad">
@@ -172,6 +177,8 @@
 <div class="modal" id="report" hidden><div class="sheet" id="reportBody"></div></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="src/osm-lib.js"></script>
+<script src="data/farsta.level.js"></script>
 <script src="src/app.js"></script>
 </body>
 </html>

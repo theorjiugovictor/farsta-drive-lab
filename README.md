@@ -51,7 +51,9 @@ It runs in any modern browser, and in VR on Meta Quest.
 
 In VR the app follows your head. Looking into the rear-view or a side mirror counts as a mirror check, turning your head past about 60 degrees counts as a shoulder check, and turning it right round counts as looking back through the rear window, so you train the real movements.
 
-**Steering wheel.** Put a hand on the rim of the wheel in the cockpit and hold the grip button: the controller buzzes and the glove turns yellow. Turn your hands to steer, about one and a quarter turns each way, like a real car. You can let go with one hand and take a new grip (hand over hand). Let go with both hands and the wheel straightens itself, faster at speed. Push the left thumbstick and the app goes back to stick steering.
+**Steering wheel.** Put a hand on the rim of the wheel in the cockpit and hold the grip button: the controller buzzes and your hand appears on the rim, turning with the wheel. Turn it to steer. With both hands on, the wheel follows the line between your hands, like a real one. You can let go with one hand and take a new grip (hand over hand). While you hold it you feel a light rumble that grows with speed and steering, and a knock at full lock. Let go with both hands and the wheel straightens itself, faster at speed. Push the left thumbstick and the app goes back to stick steering.
+
+How far the wheel turns is a setting under Meta Quest on the page: like a real car (about one and a quarter turns each way), quicker (about three quarters of a turn) or fast (about half a turn). Without the resistance of a real wheel, a quicker setting can feel more natural in VR.
 
 VR does not start inside the claude.ai artifact preview, because that page runs in a sandboxed frame. Use the GitHub Pages site.
 

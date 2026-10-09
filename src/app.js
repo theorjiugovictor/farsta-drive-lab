@@ -17,8 +17,11 @@ const CATS={
   rules:{en:'Apply the traffic rules',sv:'Trafikregler'}
 };
 const ORD=['','1st','2nd','3rd','4th','5th','6th','7th'];
-/* steering: wheel turns per road-wheel angle, cockpit wheel radius (m), wheel lock each way (rad, about 1.25 turns) */
-const STEER_RATIO=15, WHEEL_R=0.18, WHEEL_LOCK=7.8;
+/* steering: wheel turns per road-wheel angle, cockpit wheel radius (m), wheel lock each way (rad). The ratio is a
+   setting: 15 is a real car (about 1.25 turns each way); quicker ratios need less arm movement in VR. */
+const WHEEL_R=0.18, STEER_PRESETS={real:15,quick:10,fast:7};
+let STEER_RATIO=15, WHEEL_LOCK=7.8;
+function setSteerRatio(k){ STEER_RATIO=STEER_PRESETS[k]||15; WHEEL_LOCK=0.52*STEER_RATIO; }
 const DIR=['','right','straight ahead','left'];
 const ASPH='#3b3e43', LINE='#eef0ee';
 const VCOL=['#6b7c93','#b8bec6','#2f3a48','#8e2b23','#d9d4c7','#46607a','#a3a89b','#5a4a3f'];
@@ -1457,28 +1460,48 @@ function drawVRHud(){
 }
 function xPress(){ if(S.ended){ $('#report').hidden=true; prepare(); startDrive(); } else if(!S.running) startDrive(); else { S.paused=!S.paused; showOverlay(S.paused?'paused':'hide'); } }
 /* Hands on the wheel. hands: [{id, grip, p:[x,y,z]}], p in the wheel's frame (rim in the x-y plane,
-   driver on +z). A hand grabs when its grip is pressed near the rim and turns the wheel by the change in
-   its angle round the hub; two hands average, so hand-over-hand works. Let go and the wheel centres itself,
-   faster at speed. Returns the wheel angle in radians, positive to the right. */
+   driver on +z). A hand grabs when its grip is pressed near the rim. With one hand the wheel turns by the change
+   in that hand's angle round the hub; with two it turns with the line between the hands, which does not depend
+   on exactly where the wheel is, so it feels steadier. Hand over hand works. Each held hand keeps the point of
+   the rim it took (st.phi, in the wheel's own frame) so the hand can be drawn on the rim. Let go and the wheel
+   centres itself, faster at speed. Returns the wheel angle in radians, positive to the right. */
 function wheelStep(W,hands,speed,dt){
-  let sum=0,n=0;
+  const held=[];
   for(const h of hands){
-    const st=W.h[h.id]||(W.h[h.id]={held:false,a:0});
+    const st=W.h[h.id]||(W.h[h.id]={held:false,a:0,phi:0});
     const r=Math.hypot(h.p[0],h.p[1]), a=Math.atan2(h.p[1],h.p[0]);
     st.grabbed=false;
     if(!h.grip) st.held=false;
-    else if(!st.held&&Math.abs(r-WHEEL_R)<0.1&&Math.abs(h.p[2])<0.12){ st.held=true; st.a=a; st.grabbed=true; }
-    if(st.held&&(r>WHEEL_R+0.3||Math.abs(h.p[2])>0.35)) st.held=false;   // hand pulled away
-    if(st.held){ sum-=angDiff(a,st.a); st.a=a; n++; }
+    else if(!st.held&&Math.abs(r-WHEEL_R)<0.14&&Math.abs(h.p[2])<0.15){ st.held=true; st.a=a; st.phi=a+W.ang; st.grabbed=true; }
+    if(st.held&&(r>WHEEL_R+0.35||Math.abs(h.p[2])>0.4)) st.held=false;   // hand pulled right away
+    if(st.held) held.push({h,st,a});
   }
-  if(n) W.ang=clamp(W.ang+sum/n,-WHEEL_LOCK,WHEEL_LOCK);
+  let d=0;
+  if(held.length>=2){
+    const A=held[0],B=held[1], pair=A.h.id+'|'+B.h.id, va=Math.atan2(B.h.p[1]-A.h.p[1],B.h.p[0]-A.h.p[0]);
+    if(W.pair!==pair){ W.pair=pair; W.pairA=va; }      // a new pair of hands: start from here, no jump
+    d=-angDiff(va,W.pairA); W.pairA=va;
+  } else {
+    W.pair=null;
+    if(held.length===1) d=-angDiff(held[0].a,held[0].st.a);
+  }
+  for(const o of held) o.st.a=o.a;
+  if(held.length) W.ang=clamp(W.ang+d,-WHEEL_LOCK,WHEEL_LOCK);
   else W.ang-=W.ang*Math.min(1,dt*(0.4+speed*0.15));
-  W.held=n>0;
+  W.held=held.length>0;
   return W.ang;
 }
 /* Meta Quest controllers. Triggers: gas (right) and brake (left). Grips: hold the steering wheel when the hand
    is on the rim, otherwise signal. Left stick: steer (when no hand holds the wheel), push up or down like the
    indicator stalk. Right stick: forward for D, back for R. */
+/* a gloved hand drawn on the steering wheel's rim, one per side, child of the wheel so it turns with it */
+function rimHand(side){
+  V3.rimHands=V3.rimHands||{};
+  let m=V3.rimHands[side];
+  if(!m){ m=new THREE.Mesh(BOXG,new THREE.MeshLambertMaterial({color:'#f4c514'})); m.scale.set(0.05,0.05,0.07); m.visible=false; V3.rimHands[side]=m; }
+  if(V3.wheelMesh&&m.parent!==V3.wheelMesh) V3.wheelMesh.add(m);   // the cockpit is rebuilt with each drive
+  return m;
+}
 function pollXR(){
   const sess=V3.r.xr.getSession(); if(!sess) return;
   const c=S.car, W=V3.wheel, wg=V3.wheelGroup, hands=[];
@@ -1492,7 +1515,7 @@ function pollXR(){
     // where is this hand relative to the wheel?
     const gr=V3.gripBy[side]; let p=null;
     if(gr&&wg&&V3.cockpit&&V3.cockpit.visible){ const v=new THREE.Vector3().setFromMatrixPosition(gr.matrixWorld); wg.worldToLocal(v); p=[v.x,v.y,v.z]; }
-    const nearRim=p&&Math.abs(Math.hypot(p[0],p[1])-WHEEL_R)<0.1&&Math.abs(p[2])<0.12;
+    const nearRim=p&&Math.abs(Math.hypot(p[0],p[1])-WHEEL_R)<0.14&&Math.abs(p[2])<0.15;
     const grip=b(1)>0.5;
     if(p) hands.push({id:side,grip,p,src});
     // a grip press away from the wheel still signals, as before
@@ -1512,11 +1535,18 @@ function pollXR(){
   if(c){
     if(!W.mode) W.ang=c.steer*STEER_RATIO;            // wheel follows the stick until a hand takes it
     wheelStep(W,hands,Math.abs(c.v),dt);
+    const buzz=(h,i,ms)=>{ try{ const ha=h.src.gamepad.hapticActuators; if(ha&&ha[0]) ha[0].pulse(i,ms); }catch(e){} };
+    W.hapT=(W.hapT||0)-dt;
     for(const h of hands){
       const hs=W.h[h.id]; if(!hs) continue;
-      if(hs.grabbed){ W.mode=true; try{ const ha=h.src.gamepad.hapticActuators; if(ha&&ha[0]) ha[0].pulse(0.35,35); }catch(e){} }
-      const gl=V3.gripBy[h.id]&&V3.gripBy[h.id].userData.glove; if(gl) gl.material.color.set(hs.held?'#f4c514':'#2a2e33');
+      if(hs.grabbed){ W.mode=true; buzz(h,0.35,35); }
+      // the hand sits on the rim while holding it and turns with the wheel; the controller glove hides
+      const gr=V3.gripBy[h.id], gl=gr&&gr.userData.glove; if(gl) gl.visible=!hs.held;
+      const rh=rimHand(h.id); rh.visible=hs.held; if(hs.held) rh.position.set(WHEEL_R*Math.cos(hs.phi),WHEEL_R*Math.sin(hs.phi),0.01);
+      // road feel: a light rumble that grows with speed and steering, and a firm knock at full lock
+      if(hs.held&&W.hapT<=0){ const lock=Math.abs(W.ang)>=WHEEL_LOCK-0.05; buzz(h,lock?0.6:clamp(0.02+Math.abs(c.steer)*Math.abs(c.v)*0.06+Math.abs(c.v)*0.004,0,0.35),lock?40:30); }
     }
+    if(W.hapT<=0) W.hapT=0.06;
     if(!W.held&&Math.abs(st)>0.15) W.mode=false;       // back to stick steering
   }
   S.gp={st,thr,brk,wheel:W.mode?W.ang/STEER_RATIO:null};
@@ -1945,6 +1975,11 @@ if(/[?&]test\b/.test(location.search)) window.FDL_TEST={
     out.turned=W.ang; out.held=W.held;
     wheelStep(W,[{id:'right',grip:false,p:P(-Math.PI/2)},{id:'left',grip:true,p:[0.5,0.5,0.5]}],0,0.02); out.farGrab=W.held;
     for(let i=0;i<150;i++) wheelStep(W,[],10,0.02); out.centred=W.ang;
+    // two hands at 9 and 3 o'clock, both turned 30 degrees clockwise, with the wheel 4 cm off where the hands think it is
+    const W2={ang:0,h:{}}, Q=(a,o)=>[WHEEL_R*Math.cos(a)+o,WHEEL_R*Math.sin(a)+o,0];
+    wheelStep(W2,[{id:'left',grip:true,p:Q(Math.PI,0)},{id:'right',grip:true,p:Q(0,0)}],0,0.02);
+    for(let i=1;i<=6;i++) wheelStep(W2,[{id:'left',grip:true,p:Q(Math.PI-i*Math.PI/36,0.04)},{id:'right',grip:true,p:Q(-i*Math.PI/36,0.04)}],0,0.02);
+    out.twoHands=W2.ang; out.rimPoint=W2.h.right.phi;
     return out; },
   state(){ const lv=S.level; return {car:S.car&&{x:S.car.x,y:S.car.y,h:S.car.h,v:S.car.v,gear:S.car.gear},lvl:S.lvlId,running:S.running,ended:S.ended,time:S.time,faults:S.faults.map(f=>f.sev+': '+f.text),s:lv.ps,len:lv.path?lv.path.len:null,ai:S.ai.filter(v=>!v.done).length,peds:S.peds.length,instr:S.instr,route:lv.subtitle?lv.subtitle():null,reroutes:lv.reroutes||0}; },
   near(){ const c=S.car; return {car:{x:c.x,y:c.y,h:c.h,v:c.v},ai:S.ai.filter(v=>!v.done&&Math.hypot(v.x-c.x,v.y-c.y)<40).map(v=>({x:v.x,y:v.y,h:v.h,v:v.v,s:v.s,kind:v.kind,assert:!!v.assert,parked:!!v.parked,rel:rel(v),jn:v.jn&&v.jn.map(j=>({n:j.node,d:j.s-v.s}))}))}; }
@@ -1960,5 +1995,7 @@ if(V3.ok&&navigator.xr&&navigator.xr.isSessionSupported){
   navigator.xr.isSessionSupported('immersive-vr').then(ok=>{ if(ok){ $('#vrBtn').disabled=false; $('#vrNote').textContent='Put on the headset, sit down and press Drive in VR. Look into the mirrors and over your shoulder for real: the app sees where you look.'; } }).catch(()=>{});
 }
 $('#vrBtn').addEventListener('click',enterVR);
+{ const sel=$('#steerSel'), k=store.get('fdl:steer','real'); sel.value=STEER_PRESETS[k]?k:'real'; setSteerRatio(sel.value);
+  sel.addEventListener('change',()=>{ setSteerRatio(sel.value); store.set('fdl:steer',sel.value); }); }
 if(!V3.ok) $('#viewNote').textContent='The 3D views could not start on this device, so the Map view is shown.';
 })();

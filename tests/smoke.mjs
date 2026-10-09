@@ -139,6 +139,8 @@ async function autopilot(view, traffic, simSeconds) {
   if (Math.abs(w.turned - Math.PI / 2) > 0.05 || !w.held) errors.push('VR wheel: a quarter turn of the hand did not turn the wheel a quarter turn to the right');
   if (w.farGrab) errors.push('VR wheel: a grip far from the rim grabbed the wheel');
   if (Math.abs(w.centred) > 0.05) errors.push('VR wheel: the wheel did not centre itself after letting go');
+  console.log(`VR wheel, two hands turned 30 degrees with the wheel 4 cm off: ${w.twoHands.toFixed(3)} rad`);
+  if (Math.abs(w.twoHands - Math.PI / 6) > 0.02) errors.push('VR wheel: two hands turning 30 degrees did not turn the wheel 30 degrees');
 }
 
 if (await page.locator('#report').isVisible()) await page.click('#closeRep');

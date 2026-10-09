@@ -46,7 +46,7 @@ if (!realData) {
 await page.goto('file://' + path.join(root, 'index.html') + '?test');
 await page.waitForTimeout(800);
 
-for (const lvl of ['roundabout', 'highway', 'country', 'farsta']) {
+for (const lvl of ['roundabout', 'highway', 'country', 'park', 'farsta']) {
   for (const view of ['driver', 'chase', 'map']) {
     if (await page.locator('#report').isVisible()) await page.click('#closeRep');
     await page.click(`.scard[data-lvl=${lvl}]`);
@@ -94,6 +94,48 @@ async function autopilot(view, traffic, simSeconds) {
   // Not asserted: the autopilot is cautious and occasionally waits a long time at a busy junction.
   await autopilot('driver', true, 120);
   if (await page.locator('#report').isHidden()) { await page.keyboard.press('Space'); }
+}
+
+// Parking and reversing: reverse gear moves the car backwards, and each exercise finishes and is scored
+// when the car stands on its target.
+{
+  if (await page.locator('#report').isVisible()) await page.click('#closeRep');
+  await page.click('.scard[data-lvl=park]');
+  await page.click('#viewSeg [data-view=driver]');
+  await page.click('#goBtn');
+  const y0 = (await page.evaluate(() => window.FDL_TEST.state())).car.y;
+  await page.keyboard.press('r');
+  await page.keyboard.down('s');
+  await page.keyboard.down('ArrowUp');
+  await page.waitForTimeout(1500);
+  await page.locator('.stage').screenshot({ path: path.join(out, 'park-reverse-driver.png') });
+  await page.keyboard.up('ArrowUp');
+  await page.keyboard.up('s');
+  const car = (await page.evaluate(() => window.FDL_TEST.state())).car;
+  if (car.gear !== 'R' || !(car.y > y0 + 0.3)) errors.push(`Reverse gear did not move the car backwards (gear ${car.gear}, y ${y0.toFixed(2)} -> ${car.y.toFixed(2)})`);
+  for (const ex of ['parallel', 'bay', 'corner']) {
+    if (await page.locator('#report').isVisible()) await page.click('#closeRep');
+    await page.selectOption('#parkSel', ex);
+    await page.click('#viewSeg [data-view=map]');
+    await page.click('#goBtn');
+    await page.evaluate(() => window.FDL_TEST.solve());
+    await page.waitForTimeout(500);
+    await page.locator('.stage').screenshot({ path: path.join(out, `park-${ex}-map.png`) });
+    await page.waitForSelector('#report:not([hidden])', { timeout: 15000 }).catch(() => {});
+    const st = await page.evaluate(() => window.FDL_TEST.state());
+    console.log(`Parking, ${ex}: ended=${st.ended}; ${st.faults.join('; ') || 'no faults'}`);
+    if (!st.ended) errors.push(`Parking exercise ${ex} did not finish with the car on its target`);
+    if (st.faults.some((f) => !f.startsWith('minor'))) errors.push(`Parking exercise ${ex} gave a serious fault for a perfect position`);
+  }
+}
+
+// VR steering wheel, with simulated hand positions
+{
+  const w = await page.evaluate(() => window.FDL_TEST.wheel());
+  console.log(`VR wheel: quarter turn -> ${w.turned.toFixed(2)} rad, held=${w.held}, grab far from the rim=${w.farGrab}, after letting go ${w.centred.toFixed(3)} rad`);
+  if (Math.abs(w.turned - Math.PI / 2) > 0.05 || !w.held) errors.push('VR wheel: a quarter turn of the hand did not turn the wheel a quarter turn to the right');
+  if (w.farGrab) errors.push('VR wheel: a grip far from the rim grabbed the wheel');
+  if (Math.abs(w.centred) > 0.05) errors.push('VR wheel: the wheel did not centre itself after letting go');
 }
 
 if (await page.locator('#report').isVisible()) await page.click('#closeRep');

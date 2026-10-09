@@ -35,6 +35,7 @@
             <button class="scard" data-lvl="roundabout" aria-pressed="true"><span class="sw">Cirkulationsplats</span><b>Roundabout</b><span>Lane position for your exit, giving way to the left, zebra crossings, signalling out.</span></button>
             <button class="scard" data-lvl="highway" aria-pressed="false"><span class="sw">Avfart motorväg</span><b>Motorway exit</b><span>A slow truck with a queue in front. Overtake or not, lane changes with checks, braking in the exit lane.</span></button>
             <button class="scard" data-lvl="country" aria-pressed="false"><span class="sw">Landsväg</span><b>Country road</b><span>Bends, a cyclist with oncoming traffic, a car at a side road, a bus leaving its stop.</span></button>
+            <button class="scard" data-lvl="park" aria-pressed="false"><span class="sw">Parkering och backning</span><b>Parking and reversing</b><span>Parallel parking, reversing into a bay and reversing around a corner, scored on control and how much you look around.</span></button>
             <button class="scard" data-lvl="farsta" aria-pressed="false"><span class="sw">Farsta provområde</span><b>Farsta (real roads)</b><span>The streets around the Trafikverket test centre, from OpenStreetMap. Pick a route and follow the directions.</span></button>
           </div>
         </div>
@@ -60,16 +61,20 @@
           <button class="btn" id="vrBtn" disabled style="width:100%">Drive in VR</button>
           <p class="note" id="vrNote">VR opens when this app runs in the Meta Quest browser from its own web address.</p>
           <dl class="keys" style="margin-top:8px">
-            <dt>L stick</dt><dd>Steer</dd>
+            <dt>Grips</dt><dd>Hold the steering wheel (hands on the rim) and turn it; away from the wheel they signal</dd>
+            <dt>L stick</dt><dd>Steer without the wheel. Up or down: indicator stalk</dd>
+            <dt>R stick</dt><dd>Forward: D. Back: R</dd>
             <dt>R trigger</dt><dd>Gas</dd>
             <dt>L trigger</dt><dd>Brake</dd>
-            <dt>Grips</dt><dd>Signal left / right</dd>
             <dt>A</dt><dd>Hold current speed</dd>
             <dt>X</dt><dd>Start, pause, drive again</dd>
             <dt>Y</dt><dd>Recenter your seat</dd>
-            <dt>Head</dt><dd>Look into a mirror or over your shoulder to check</dd>
+            <dt>Head</dt><dd>Look into a mirror, over your shoulder, or back through the rear window to check</dd>
           </dl>
         </div>
+        <label class="field" id="parkField" hidden>Exercise
+          <select id="parkSel"><option value="parallel">Parallel parking (fickparkering)</option><option value="bay">Reverse into a parking bay</option><option value="corner">Reverse around a corner (backa runt hörn)</option></select>
+        </label>
         <label class="field" id="routeField" hidden>Route
           <select id="routeSel"></select>
         </label>
@@ -84,6 +89,8 @@
             <dt>Q / E</dt><dd>Signal left / right</dd>
             <dt>W</dt><dd>Look in the mirrors (hold to keep looking)</dd>
             <dt>A / D</dt><dd>Turn your head left / right (hold)</dd>
+            <dt>S</dt><dd>Look back through the rear window (hold)</dd>
+            <dt>R</dt><dd>Gear: D or R (when stopped)</dd>
             <dt>C</dt><dd>Hold current speed</dd>
             <dt>V</dt><dd>Change view</dd>
             <dt>Space</dt><dd>Start or pause</dd>
@@ -103,7 +110,7 @@
             <div class="mirror ck" id="mR">W</div>
             <div class="instr"><div class="dir" id="hudDir"></div><div class="hint" id="hudHint" hidden></div></div>
             <div class="limit" id="hudLim">40</div>
-            <div class="speedo"><b id="hudSpd">0</b><span>km/h</span><span class="cr" id="hudCr" hidden>HOLD</span></div>
+            <div class="speedo"><b id="hudSpd">0</b><span>km/h</span><span class="gear" id="hudGear">D</span><span class="cr" id="hudCr" hidden>HOLD</span></div>
             <div class="checks">
               <span class="chip sig" id="cL">◀</span>
               <span class="chip" id="cSL">Left</span>
@@ -121,10 +128,12 @@
           <button data-tap="sigL">◀ Signal</button>
           <button data-tap="lookL">Look left</button>
           <button data-tap="mirror">Mirrors</button>
+          <button data-tap="lookB">Look back</button>
           <button data-tap="lookR">Look right</button>
           <button data-tap="sigR">Signal ▶</button>
           <button data-hold="left">◀ Steer</button>
           <button data-hold="right">Steer ▶</button>
+          <button data-tap="gear">D / R</button>
           <button data-tap="cruise">Hold speed</button>
           <button data-hold="down" class="brake">Brake</button>
           <button data-hold="up" class="gas">Gas</button>

@@ -13,6 +13,7 @@ It runs in any modern browser, and in VR on Meta Quest.
 | Roundabout | Lane position for your exit, giving way to the left, zebra crossings, signalling out |
 | Motorway exit | A slow truck with a tight queue ahead. Overtake or stay, lane changes with checks, braking in the exit lane |
 | Country road | Bends, a cyclist with oncoming traffic, a car pulling out of a side road, a bus leaving its stop in a 50 zone |
+| Parking and reversing | Parallel parking (fickparkering), reversing into a bay, reversing around a corner (backa runt hörn). Scored on looking around before and while reversing, kerb contact, speed, the final position (straight, centred, close to the kerb) and the number of corrections |
 | Farsta (real roads) | The streets around Trafikverket's test centre at Fryksdalsbacken 20, built from OpenStreetMap. Pick a route and follow the spoken-style directions ("In 200 m, at the roundabout, take the 2nd exit"). Scored on turns, roundabouts, traffic lights, zebra crossings, give-way and högerregeln junctions, buses leaving stops and speed limits, with AI traffic all around |
 
 **Coach** mode shows hints and faults as you drive. **Test** mode stays silent and gives you the report at the end.
@@ -29,12 +30,14 @@ It runs in any modern browser, and in VR on Meta Quest.
 
 | Action | Keyboard | Gamepad (standard) | Meta Quest controllers (VR) |
 | --- | --- | --- | --- |
-| Steer | Left / Right arrows | Left stick | Left thumbstick |
+| Steer | Left / Right arrows | Left stick (a USB steering wheel works too) | Hold the steering wheel with the grips and turn it, or use the left thumbstick |
 | Gas | Up arrow | Right trigger | Right trigger |
 | Brake | Down arrow | Left trigger | Left trigger |
-| Signal left / right | Q / E | LB / RB | Left grip / right grip |
+| Signal left / right | Q / E | LB / RB | Left thumbstick down / up (the stalk), or a grip away from the wheel |
 | Mirrors | W (hold) | Y | Look at a mirror. B also works |
 | Shoulder check | A / D (hold) | X / B | Turn your head |
+| Look back through the rear window | S (hold) | Right stick click | Turn your head right round |
+| Gear D / R (when stopped) | R | Back / Select | Right stick: forward D, back R |
 | Hold speed | C | A | A |
 | Start or pause | Space | | X |
 | Change view | V | | |
@@ -46,7 +49,9 @@ It runs in any modern browser, and in VR on Meta Quest.
 2. Sit down and press **Drive in VR**.
 3. Press Y to recenter your seat if the view is offset.
 
-In VR the app follows your head. Looking into the rear-view or a side mirror counts as a mirror check, and turning your head past about 60 degrees counts as a shoulder check, so you train the real movements.
+In VR the app follows your head. Looking into the rear-view or a side mirror counts as a mirror check, turning your head past about 60 degrees counts as a shoulder check, and turning it right round counts as looking back through the rear window, so you train the real movements.
+
+**Steering wheel.** Put a hand on the rim of the wheel in the cockpit and hold the grip button: the controller buzzes and the glove turns yellow. Turn your hands to steer, about one and a quarter turns each way, like a real car. You can let go with one hand and take a new grip (hand over hand). Let go with both hands and the wheel straightens itself, faster at speed. Push the left thumbstick and the app goes back to stick steering.
 
 VR does not start inside the claude.ai artifact preview, because that page runs in a sandboxed frame. Use the GitHub Pages site.
 
